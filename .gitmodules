@@ -1,0 +1,12 @@
+[submodule "references/AI-Trader"]
+	path = references/AI-Trader
+	url = https://github.com/HKUDS/AI-Trader.git
+[submodule "references/Kronos"]
+	path = references/Kronos
+	url = https://github.com/shiyu-coder/Kronos.git
+[submodule "references/notebooklm-py"]
+	path = references/notebooklm-py
+	url = https://github.com/teng-lin/notebooklm-py.git
+[submodule "references/llmwiki"]
+	path = references/llmwiki
+	url = https://github.com/lucasastorian/llmwiki.git
