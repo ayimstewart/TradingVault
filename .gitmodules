@@ -25,3 +25,6 @@
 [submodule "references/agent-reach"]
 	path = references/agent-reach
 	url = https://github.com/Panniantong/Agent-Reach.git
+[submodule "references/jcode"]
+	path = references/jcode
+	url = https://github.com/1jehuang/jcode.git
