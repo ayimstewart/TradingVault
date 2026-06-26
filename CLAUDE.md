@@ -92,21 +92,21 @@ FLAG: If capital < 80% → reduce sizing, increase scrutiny
 ```
 METHOD A — MCP Tool (preferred — native in Cursor after setup):
   Tool: chat_ask
-  notebook: "Master Brain"
+  notebook: "Green Bread Coach(GBC)"
   question: "Summarize recent research artifacts. Key macro themes? Central bank updates?"
 
   Tool: chat_ask
-  notebook: "Master Brain"
+  notebook: "Green Bread Coach(GBC)"
   question: "What does my strategy say about current [ASSET] conditions?"
 
 METHOD B — CLI fallback (terminal in Cursor):
-  $ notebooklm use "Master Brain"
+  $ notebooklm use "Green Bread Coach(GBC)"
   $ notebooklm ask "Summarize recent research. Key macro themes?"
   $ notebooklm ask "EMA fanning rules for bullish trend continuation?"
 
 METHOD C — Browser (last resort):
   1. Open notebooklm.google.com
-  2. Open Master Brain notebook
+  2. Open Green Bread Coach(GBC) notebook
   3. Type query, paste response into session-notes.md
 
 RECORD: All NotebookLM responses → session-notes.md Market Context section
@@ -245,7 +245,7 @@ PURPOSE: Programmatic access to NotebookLM — bulk import sources,
 REPO: github.com/teng-lin/notebooklm-py
 COMMANDS:
   notebooklm import sources/*.md     # Bulk-import vault research
-  notebooklm ask "your query here"   # Query Master Brain notebook
+  notebooklm ask "your query here"   # Query Green Bread Coach(GBC) notebook
   notebooklm sync                    # Sync new sources/
 ```
 
@@ -303,16 +303,16 @@ After `notebooklm mcp install cursor`, these tools are native inside
 Claude Code in Cursor — no CLI, no browser switching:
 
 ```
-chat_ask(notebook="Master Brain", question="...")
+chat_ask(notebook="Green Bread Coach(GBC)", question="...")
   → grounded answer from your 15 sources with citations
 
-source_add(notebook="Master Brain", source_type="file", path="sources/file.md")
+source_add(notebook="Green Bread Coach(GBC)", source_type="file", path="sources/file.md")
   → add new research artifact to the notebook
 
-source_wait(notebook="Master Brain")
+source_wait(notebook="Green Bread Coach(GBC)")
   → block until sources finish processing before querying
 
-note_create(notebook="Master Brain", title="2026-06-22-session", text="...")
+note_create(notebook="Green Bread Coach(GBC)", title="2026-06-22-session", text="...")
   → persist session decisions as notes (cross-session memory on Google's infra)
 ```
 
