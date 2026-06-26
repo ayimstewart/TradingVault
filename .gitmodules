@@ -10,3 +10,6 @@
 [submodule "references/llmwiki"]
 	path = references/llmwiki
 	url = https://github.com/lucasastorian/llmwiki.git
+[submodule "references/ruflo"]
+	path = references/ruflo
+	url = https://github.com/ruvnet/ruflo.git
