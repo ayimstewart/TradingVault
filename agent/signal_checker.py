@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from enum import Enum
+from typing import Optional
 
 
 class SignalType(Enum):
@@ -29,6 +30,43 @@ class BlockReason(Enum):
     SILLY_DONATION_FOMO  = "FOMO detected — move already in progress (BLOCKED)"
     SILLY_DONATION_FORCE = "Forced setup — no valid confluence (BLOCKED)"
     CAPITAL_THRESHOLD    = "Capital below safe threshold — sizing reduced"
+
+
+# ── ruflo-neural-trader: Market Regime ────────────────────────────────────────
+
+class MarketRegime(Enum):
+    BULL_TRENDING   = "Bull Trending"
+    BEAR_TRENDING   = "Bear Trending"
+    RANGING         = "Ranging"
+    HIGH_VOLATILITY = "High Volatility"
+    TRANSITIONING   = "Transitioning"
+    UNKNOWN         = "Unknown"
+
+
+@dataclass
+class NeuralContext:
+    """
+    ruflo-neural-trader advisory context.
+    NEVER overrides rules.md — informational weight layer only (same role as Kronos).
+    """
+    regime:           MarketRegime = MarketRegime.UNKNOWN
+    anomaly_score:    float        = 0.0     # 0.0–1.0; >0.5 = significant
+    anomaly_type:     str          = ""      # spike | drift | flatline | oscillation | cluster-outlier
+    circuit_breakers: list         = field(default_factory=list)
+    patterns:         list         = field(default_factory=list)
+    regime_note:      str          = ""
+
+    def to_console(self) -> str:
+        lines = [f"  ── Neural Context (advisory — ruflo-neural-trader) ──"]
+        lines.append(f"  Regime:      {self.regime.value}  {self.regime_note}")
+        if self.anomaly_score > 0.1:
+            lines.append(f"  Anomaly:     {self.anomaly_score:.2f}  [{self.anomaly_type}]")
+        if self.patterns:
+            lines.append(f"  Patterns:    {', '.join(self.patterns)}")
+        if self.circuit_breakers:
+            for cb in self.circuit_breakers:
+                lines.append(f"  ⚠ Breaker:  {cb}")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -51,6 +89,9 @@ class SignalResult:
 
     # Block reasons (populated if passed=False)
     blocked_by:    list[str] = field(default_factory=list)
+
+    # ruflo-neural-trader advisory context (never blocks signals)
+    neural_context: Optional[NeuralContext] = field(default=None)
 
     # Metadata
     timestamp:     str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -87,8 +128,109 @@ class SignalResult:
             lines.append(f"{'─'*55}")
             for reason in self.blocked_by:
                 lines.append(f"  ✗ {reason}")
+        if self.neural_context is not None:
+            lines.append(f"{'─'*55}")
+            lines.append(self.neural_context.to_console())
         lines.append(f"{'═'*55}")
         return "\n".join(lines)
+
+
+# ── ruflo-neural-trader: Regime / Anomaly / Circuit Breaker functions ─────────
+
+def assess_regime(df: pd.DataFrame, row: pd.Series) -> tuple:
+    """
+    ruflo-neural-trader regime detection.
+    Derives from EMA fan spread + ATR expansion as ADX/SMA200 proxy.
+    Returns (MarketRegime, note_str).
+    """
+    e8, e20, e50 = row["ema_8"], row["ema_20"], row["ema_50"]
+    atr          = row.get("atr_7", 0.0)
+
+    ema_spread_pct = abs(e8 - e50) / e50 * 100 if e50 > 0 else 0.0
+    atr_series     = df["atr_7"].dropna()
+    atr_mean       = atr_series.rolling(10, min_periods=1).mean().iloc[-1] if len(atr_series) else 0.0
+    atr_ratio      = atr / atr_mean if atr_mean > 0 else 1.0
+
+    if atr_ratio > 2.0:
+        return MarketRegime.HIGH_VOLATILITY, "ATR >2× average — reduce size, widen stops"
+
+    fanning_bull = e8 > e20 > e50
+    fanning_bear = e8 < e20 < e50
+
+    if ema_spread_pct > 2.0 and fanning_bull:
+        return MarketRegime.BULL_TRENDING, "Strong bull trend — momentum strategies aligned"
+    if ema_spread_pct > 2.0 and fanning_bear:
+        return MarketRegime.BEAR_TRENDING, "Strong bear trend — short momentum aligned"
+    if ema_spread_pct < 0.5:
+        return MarketRegime.RANGING, "EMAs flat — mean-reversion context, wait for breakout"
+    if atr_ratio > 1.5:
+        return MarketRegime.TRANSITIONING, "Regime change forming — wait for confirmation"
+
+    return MarketRegime.UNKNOWN, ""
+
+
+def calc_anomaly_score(df: pd.DataFrame, row: pd.Series) -> tuple:
+    """
+    ruflo-neural-trader Z-score composite: anomalyScore = min(1, meanZ / 3).
+    Returns (score: float, type: str).
+    """
+    try:
+        window = df.tail(20)
+        fields = ["open", "high", "low", "close", "volume"]
+        z_scores = []
+        for f in fields:
+            col = window[f]
+            std = col.std()
+            if std > 0:
+                z_scores.append(abs((row[f] - col.mean()) / std))
+
+        if not z_scores:
+            return 0.0, ""
+
+        mean_z = sum(z_scores) / len(z_scores)
+        max_z  = max(z_scores)
+        score  = min(1.0, mean_z / 3.0)
+
+        if max_z > 5:
+            atype = "spike"
+        elif sum(1 for z in z_scores if z > 1) > len(z_scores) * 0.5:
+            atype = "cluster-outlier"
+        elif mean_z > 2:
+            atype = "drift"
+        elif score < 0.1:
+            atype = "flatline"
+        elif mean_z > 0.5:
+            atype = "oscillation"
+        else:
+            atype = ""
+
+        return score, atype
+
+    except Exception:
+        return 0.0, ""
+
+
+def check_circuit_breakers(
+    capital_pct:     float,
+    daily_loss_pct:  float = 0.0,
+    weekly_loss_pct: float = 0.0,
+) -> list:
+    """
+    ruflo-neural-trader circuit breakers — active triggers returned as strings.
+    These supplement the 90-90-90 capital safeguard in rules.md §5.
+    """
+    active = []
+    if daily_loss_pct > 3.0:
+        active.append(f"Daily loss {daily_loss_pct:.1f}% > 3% — halt new entries")
+    if weekly_loss_pct > 5.0:
+        active.append(f"Weekly loss {weekly_loss_pct:.1f}% > 5% — reduce sizes 50%")
+    if capital_pct < 70:
+        active.append("Capital <70% RED — no new signals until root cause audit")
+    elif capital_pct < 80:
+        active.append("Capital <80% ORANGE — reduce position sizing")
+    elif capital_pct < 90:
+        active.append("Capital <90% YELLOW — review last 3 decisions")
+    return active
 
 
 def check_signal(
@@ -96,20 +238,24 @@ def check_signal(
     ticker: str,
     timeframe: str = "1w",
     capital_pct: float = 100.0,
+    daily_loss_pct: float = 0.0,
+    weekly_loss_pct: float = 0.0,
 ) -> SignalResult:
     """
     Run the full Cockpit Checklist against the latest candle.
 
     Args:
-        df:           DataFrame with columns: open, high, low, close,
-                      ema_8, ema_20, ema_50, atr_7
-                      (output of data_fetcher.add_ema + add_atr)
-        ticker:       Asset name e.g. "BTC"
-        timeframe:    Timeframe string e.g. "1w", "4h"
-        capital_pct:  Current capital as % of starting capital (90-90-90 check)
+        df:               DataFrame with columns: open, high, low, close,
+                          ema_8, ema_20, ema_50, atr_7
+                          (output of data_fetcher.add_ema + add_atr + normalize_ohlcv)
+        ticker:           Asset name e.g. "BTC"
+        timeframe:        Timeframe string e.g. "1w", "4h"
+        capital_pct:      Current capital as % of starting capital (90-90-90 check)
+        daily_loss_pct:   Session loss % today (for circuit breaker check)
+        weekly_loss_pct:  Loss % this week (for circuit breaker check)
 
     Returns:
-        SignalResult — fully populated, blocked or confirmed.
+        SignalResult — fully populated, blocked or confirmed, with neural_context advisory.
     """
     row     = df.iloc[-1]
     prev    = df.iloc[-2] if len(df) > 1 else row
@@ -179,29 +325,56 @@ def check_signal(
             stop_loss = entry + atr
             target_1r = entry - (stop_loss - entry)
 
+    # ── ruflo-neural-trader: build advisory context ────────────────────────
+    regime, regime_note     = assess_regime(df, row)
+    anomaly_score, atype    = calc_anomaly_score(df, row)
+    circuit_breaker_hits    = check_circuit_breakers(capital_pct, daily_loss_pct, weekly_loss_pct)
+
+    # Collect any detected candlestick patterns from norm_ columns if present
+    from data_fetcher import detect_candlestick_patterns
+    try:
+        detected_patterns = [
+            name for name, p in detect_candlestick_patterns(df).items()
+            if p["detected"]
+        ]
+    except Exception:
+        detected_patterns = []
+
+    neural_ctx = NeuralContext(
+        regime           = regime,
+        anomaly_score    = anomaly_score,
+        anomaly_type     = atype,
+        circuit_breakers = circuit_breaker_hits,
+        patterns         = detected_patterns,
+        regime_note      = regime_note,
+    )
+
     return SignalResult(
-        ticker      = ticker,
-        timeframe   = timeframe,
-        signal_type = signal_type,
-        passed      = passed,
-        entry_price = entry,
-        stop_loss   = stop_loss,
-        target_1r   = target_1r,
-        ema_trend   = ema_trend,
-        body_rule   = body_valid,
-        atr_value   = atr,
-        blocked_by  = [b for b in blocked],
+        ticker         = ticker,
+        timeframe      = timeframe,
+        signal_type    = signal_type,
+        passed         = passed,
+        entry_price    = entry,
+        stop_loss      = stop_loss,
+        target_1r      = target_1r,
+        ema_trend      = ema_trend,
+        body_rule      = body_valid,
+        atr_value      = atr,
+        blocked_by     = [b for b in blocked],
+        neural_context = neural_ctx,
     )
 
 
 def run_full_checklist(
-    all_data: dict[str, pd.DataFrame],
+    all_data: dict,
     timeframe: str = "1w",
     capital_pct: float = 100.0,
-) -> list[SignalResult]:
+    daily_loss_pct: float = 0.0,
+    weekly_loss_pct: float = 0.0,
+) -> list:
     """
     Run checklist on all watch list assets and return results.
-    Prints a full console report.
+    Prints a full console report including ruflo-neural-trader context.
     """
     results   = []
     confirmed = []
@@ -214,7 +387,7 @@ def run_full_checklist(
     print(f"{'='*55}")
 
     for ticker, df in all_data.items():
-        result = check_signal(df, ticker, timeframe, capital_pct)
+        result = check_signal(df, ticker, timeframe, capital_pct, daily_loss_pct, weekly_loss_pct)
         results.append(result)
         print(result.to_console())
 

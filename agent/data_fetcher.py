@@ -128,6 +128,96 @@ def check_body_rule(row: pd.Series, direction: str) -> bool:
     return False
 
 
+def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    ruflo-market-data OHLCV normalization (relative scaling).
+    Adds norm_ columns — used for pattern vectorization and anomaly scoring.
+    """
+    df = df.copy()
+    prev_close = df["close"].shift(1)
+    df["norm_open"]  = (df["open"]  - prev_close) / prev_close.replace(0, float("nan"))
+    df["norm_high"]  = (df["high"]  - df["open"]) / df["open"].replace(0, float("nan"))
+    df["norm_low"]   = (df["low"]   - df["open"]) / df["open"].replace(0, float("nan"))
+    df["norm_close"] = (df["close"] - df["open"]) / df["open"].replace(0, float("nan"))
+    vol_mean = df["volume"].rolling(20, min_periods=1).mean()
+    vol_std  = df["volume"].rolling(20, min_periods=1).std().replace(0, 1)
+    df["norm_volume"] = (df["volume"] - vol_mean) / vol_std
+    return df
+
+
+def detect_candlestick_patterns(df: pd.DataFrame) -> dict:
+    """
+    ruflo-market-data pattern library — single and multi-candle formations.
+    Returns dict of pattern_name → {"detected": bool, "reliability": str}
+    """
+    if len(df) < 2:
+        return {}
+
+    row  = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    candle_range = row["high"] - row["low"]
+    body         = abs(row["close"] - row["open"])
+    upper_wick   = row["high"] - max(row["close"], row["open"])
+    lower_wick   = min(row["close"], row["open"]) - row["low"]
+
+    patterns = {}
+
+    if candle_range > 0:
+        # Doji: body < 10% of full range
+        patterns["doji"] = {
+            "detected":    body / candle_range < 0.10,
+            "reliability": "Medium",
+        }
+        # Hammer: small body in upper zone, long lower wick ≥ 2× body
+        hammer_top = row["high"] - (candle_range * 0.30)
+        patterns["hammer"] = {
+            "detected": (
+                min(row["close"], row["open"]) >= hammer_top
+                and lower_wick >= 2 * max(body, 1e-10)
+                and upper_wick <= body * 0.5
+            ),
+            "reliability": "Medium-High",
+        }
+        # Shooting star: small body in lower zone, long upper wick ≥ 2× body
+        shoot_bot = row["low"] + (candle_range * 0.30)
+        patterns["shooting_star"] = {
+            "detected": (
+                max(row["close"], row["open"]) <= shoot_bot
+                and upper_wick >= 2 * max(body, 1e-10)
+                and lower_wick <= body * 0.5
+            ),
+            "reliability": "Medium-High",
+        }
+
+    # Engulfing (2-candle): current body fully engulfs previous body
+    prev_body_hi = max(prev["close"], prev["open"])
+    prev_body_lo = min(prev["close"], prev["open"])
+    curr_body_hi = max(row["close"],  row["open"])
+    curr_body_lo = min(row["close"],  row["open"])
+
+    patterns["bullish_engulfing"] = {
+        "detected": (
+            prev["close"] < prev["open"]
+            and row["close"] > row["open"]
+            and curr_body_lo < prev_body_lo
+            and curr_body_hi > prev_body_hi
+        ),
+        "reliability": "High",
+    }
+    patterns["bearish_engulfing"] = {
+        "detected": (
+            prev["close"] > prev["open"]
+            and row["close"] < row["open"]
+            and curr_body_lo < prev_body_lo
+            and curr_body_hi > prev_body_hi
+        ),
+        "reliability": "High",
+    }
+
+    return patterns
+
+
 def fetch_all_assets(timeframe: str = "1w") -> dict:
     """Fetch OHLCV + indicators for all watch list assets at a given timeframe."""
     exchange = get_exchange()
@@ -142,6 +232,7 @@ def fetch_all_assets(timeframe: str = "1w") -> dict:
             df = fetch_ohlcv(exchange, symbol, timeframe)
             df = add_ema(df)
             df = add_atr(df)
+            df = normalize_ohlcv(df)   # ruflo-market-data: relative normalization
 
             latest = df.iloc[-1]
             trend  = classify_ema_trend(latest)
@@ -153,11 +244,21 @@ def fetch_all_assets(timeframe: str = "1w") -> dict:
             else:
                 body_valid = False
 
+            # ruflo-market-data: pattern detection
+            patterns = detect_candlestick_patterns(df)
+            active_patterns = [
+                f"{name}({p['reliability']})"
+                for name, p in patterns.items()
+                if p["detected"]
+            ]
+
             results[ticker] = df
 
+            pattern_str = ", ".join(active_patterns) if active_patterns else "none"
             print(f"  {ticker:<5} | Close: {latest['close']:>12.8g} | "
                   f"ATR(7): {latest['atr_7']:>10.4f} | "
-                  f"Trend: {trend:<14} | Body: {'PASS' if body_valid else 'FAIL'}")
+                  f"Trend: {trend:<14} | Body: {'PASS' if body_valid else 'FAIL'} | "
+                  f"Patterns: {pattern_str}")
 
         except Exception as e:
             print(f"  {ticker:<5} | ERROR: {e}")
