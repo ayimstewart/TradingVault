@@ -13,8 +13,9 @@ Execution order:
     4. signal_checker      — Cockpit Checklist (rules.md §1–4)
     5. pattern_db          — turbovec historical pattern match
     6. apex_guard          — PA-50K trailing drawdown check
+    6b. rithmic_executor   — Apex CME micro-futures (dry-run default)
     7. robinhood_executor  — stage orders for apex-cleared signals
-    8. ai_trader_publisher — publish to ai4trade.ai
+    8. ai_trader_publisher — publish apex-cleared signals to ai4trade.ai
     9. Log to logs/decisions-log.md + Morning Brief to sources/
 """
 
@@ -179,6 +180,27 @@ def step_6_apex_guard(signal_results: list) -> list:
     return apex_cleared
 
 
+# ── Step 6b: rithmic_executor ─────────────────────────────────────────────────
+
+def step_6b_rithmic(apex_cleared: list, live: bool = False) -> list[dict]:
+    """
+    Stage (or submit) Apex CME micro-futures bracket orders via Rithmic.
+    Runs in dry-run mode by default; pass live=True only when confirmed.
+    """
+    _banner("6b", "Rithmic Executor — Apex CME Micro-Futures")
+    try:
+        from rithmic_executor import execute_apex_cleared
+        results = execute_apex_cleared(apex_cleared, live=live)
+        submitted = sum(1 for r in results if r.get("status") == "submitted")
+        staged    = sum(1 for r in results if r.get("status") == "staged")
+        blocked   = sum(1 for r in results if "blocked" in r.get("status", ""))
+        print(f"\n  Rithmic: {submitted} submitted | {staged} staged | {blocked} blocked")
+        return results
+    except Exception as e:
+        _warn("rithmic_executor", e)
+        return []
+
+
 # ── Step 7: robinhood_executor ────────────────────────────────────────────────
 
 def step_7_robinhood(
@@ -204,6 +226,10 @@ def step_7_robinhood(
 
     orders: list[dict] = []
     for sig in apex_cleared:
+        if sig.stop_loss <= 0:
+            print(f"  ✗ {sig.ticker} skipped — no ATR(7) stop (rules.md §4)")
+            continue
+
         if account_balance is not None:
             card  = size_position(sig, account_balance=account_balance)
             units = card.position_units
@@ -228,12 +254,9 @@ def step_7_robinhood(
 
 # ── Step 8: ai_trader_publisher ───────────────────────────────────────────────
 
-def step_8_publish(
-    signal_results: list,
-    brief_text: str,
-) -> dict:
+def step_8_publish(apex_cleared: list, brief_text: str) -> dict:
     from ai_trader_publisher import run_pipeline_step
-    return run_pipeline_step(signal_results, brief_text, WATCH_LIST)
+    return run_pipeline_step(apex_cleared, brief_text, WATCH_LIST)
 
 
 # ── Step 9: log + morning brief ───────────────────────────────────────────────
@@ -282,6 +305,20 @@ def _load_capital_pct() -> float:
     return 100.0
 
 
+def _build_brief_text(confirmed: list, apex_cleared: list) -> str:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if apex_cleared:
+        parts = ", ".join(f"{r.ticker} {r.signal_type.value}" for r in apex_cleared)
+    elif confirmed:
+        parts = "No apex-cleared setups"
+    else:
+        parts = "No confirmed setups — all assets CONVERGING or FLAT"
+    apex_blocked = [r.ticker for r in confirmed if r not in apex_cleared]
+    if apex_blocked:
+        parts += f" | Apex-blocked: {', '.join(apex_blocked)}"
+    return f"Morning Brief {today} | {parts}"
+
+
 # ── Pipeline summary ──────────────────────────────────────────────────────────
 
 def _print_summary(
@@ -305,9 +342,10 @@ def _print_summary(
     print(f"  Morning brief posted:  {'✓' if publish_result.get('brief_posted') else '—'}")
 
     if confirmed:
-        print(f"\n  Valid setups:")
+        print("\n  Checklist-passed setups:")
         for r in confirmed:
-            print(f"    ✓ {r.ticker:<6} {r.signal_type.value:<5}  "
+            apex_tag = "apex ✓" if r in apex_cleared else "apex ✗"
+            print(f"    [{apex_tag}] {r.ticker:<6} {r.signal_type.value:<5}  "
                   f"entry={r.entry_price:.4g}  stop={r.stop_loss:.4g}  "
                   f"target={r.target_1r:.4g}")
     else:
@@ -333,6 +371,10 @@ def main() -> None:
     parser.add_argument(
         "--no-publish", action="store_true",
         help="Skip AI-Trader publish step",
+    )
+    parser.add_argument(
+        "--rithmic-live", action="store_true",
+        help="Submit Rithmic orders LIVE (default: dry-run staging only)",
     )
     args = parser.parse_args()
 
@@ -378,20 +420,18 @@ def main() -> None:
     # Step 6 — Apex guard
     apex_cleared = step_6_apex_guard(signal_results)
 
+    # Step 6b — Rithmic CME micro-futures (dry-run unless --rithmic-live)
+    step_6b_rithmic(apex_cleared, live=args.rithmic_live)
+
     # Step 7 — Robinhood orders
     orders = step_7_robinhood(apex_cleared, args.account)
 
-    # Step 8 — AI-Trader publish
+    # Step 8 — AI-Trader publish (apex-cleared only)
     publish_result: dict = {}
     if not args.no_publish:
-        # Build brief text from signal summary for publish
         confirmed  = [r for r in signal_results if getattr(r, "passed", False)]
-        brief_text = (
-            f"Morning Brief {datetime.now(timezone.utc).strftime('%Y-%m-%d')} | "
-            + (", ".join(f"{r.ticker} {r.signal_type.value}" for r in confirmed)
-               if confirmed else "No confirmed setups — all assets CONVERGING or FLAT")
-        )
-        publish_result = step_8_publish(signal_results, brief_text)
+        brief_text = _build_brief_text(confirmed, apex_cleared)
+        publish_result = step_8_publish(apex_cleared, brief_text)
     else:
         _banner(8, "AI-Trader Publisher — skipped (--no-publish)")
 

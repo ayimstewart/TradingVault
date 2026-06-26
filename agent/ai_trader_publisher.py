@@ -127,13 +127,23 @@ def publish_confirmed_signals(signal_results: list, note: str = "") -> list[dict
         if not getattr(sig, "passed", False):
             continue
 
+        stop = float(getattr(sig, "stop_loss", 0.0) or 0.0)
+        if stop <= 0:
+            print(f"  ✗ BLOCKED {sig.ticker}: No ATR(7) stop — not publishing (rules.md §4)")
+            continue
+
+        entry = float(getattr(sig, "entry_price", 0.0) or 0.0)
+        if entry <= 0:
+            print(f"  ✗ BLOCKED {sig.ticker}: No entry price — not publishing")
+            continue
+
         direction = sig.signal_type.value   # "LONG" | "SHORT"
         action    = "buy" if direction == "LONG" else "short"
 
         parts = [
             f"{sig.ticker} {direction}",
-            f"Entry: {sig.entry_price:.6g}",
-            f"Stop (ATR7): {sig.stop_loss:.6g}",
+            f"Entry: {entry:.6g}",
+            f"Stop (ATR7): {stop:.6g}",
             f"Target 1R: {sig.target_1r:.6g}",
             f"EMA: {sig.ema_trend}",
             f"TF: {sig.timeframe.upper()}",
@@ -145,7 +155,7 @@ def publish_confirmed_signals(signal_results: list, note: str = "") -> list[dict
             "market":      "crypto",
             "action":      action,
             "symbol":      sig.ticker,
-            "price":       float(sig.entry_price),
+            "price":       entry,
             "quantity":    1,
             "content":     "  |  ".join(parts),
             "executed_at": datetime.now(timezone.utc).isoformat(),
@@ -161,7 +171,7 @@ def publish_confirmed_signals(signal_results: list, note: str = "") -> list[dict
             resp.raise_for_status()
             result = resp.json()
             published.append(result)
-            print(f"  ✓ Published: {sig.ticker} {direction} @ {sig.entry_price:.6g}")
+            print(f"  ✓ Published: {sig.ticker} {direction} @ {entry:.6g}  stop={stop:.6g}")
         except Exception as e:
             print(f"  ⚠ Publish failed ({sig.ticker}): {e}")
 
@@ -248,7 +258,7 @@ def run_pipeline_step(
         return {"published": 0, "brief_posted": False, "heartbeat": False}
 
     valid = [r for r in signal_results if getattr(r, "passed", False)]
-    print(f"  Valid signals to publish: {len(valid)}")
+    print(f"  Signals to publish (apex-cleared): {len(valid)}")
 
     published = publish_confirmed_signals(signal_results)
 

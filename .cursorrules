@@ -50,6 +50,9 @@ Check off as you go by updating this file.
 - [x] Phase 6: pattern_db.py — turbovec IdMapIndex (replaces Ruflo AgentDB) for harmonic pattern vector search
 - [x] Phase 6: quant_mind_fetcher.py — extended with agent-reach web channels (YouTube, Jina, Reddit, Twitter)
 - [ ] Phase 6: claude mcp add claude-mem -- npx claude-mem@latest (run manually — blocked by auto-mode)
+- [x] Phase 7: full_pipeline.py + ai_trader_publisher.py — master orchestrator v1.0
+- [x] Phase 7: rithmic_executor.py — Mac-native Apex futures via async_rithmic
+- [x] Phase 7: async-rithmic + pyrithmic reference submodules
 
 ## How to Build Each Item
 

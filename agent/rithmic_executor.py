@@ -1,12 +1,14 @@
 """
 rithmic_executor.py — Mac-native Rithmic futures executor for Apex PA-50K.
 
-Replaces MT5 entirely. Connects via async_rithmic (asyncio + Protocol Buffer API).
+Replaces MT5 entirely. Connects via Rithmic Protocol Buffer API.
 Receives apex-cleared SignalResult objects from full_pipeline / apex_guard.
 
-Libraries (reference repos):
-  - references/async-rithmic  → pip install async_rithmic  (primary)
-  - references/pyrithmic      → alternative; not required here
+Libraries (reference repos — add as submodules, then install):
+  - references/async-rithmic  → pip install async-rithmic        (primary)
+    GitHub: https://github.com/rundef/async_rithmic
+  - references/pyrithmic      → pip install git+https://github.com/jacksonwoody/pyrithmic.git
+    GitHub: https://github.com/jacksonwoody/pyrithmic             (fallback, sync API)
 
 Config: ~/.tradingvault/rithmic.json  (credentials — never commit)
 State:  ~/.tradingvault/apex_state.json (trailing drawdown — apex_guard.py)
@@ -30,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -382,6 +385,46 @@ def _build_client(config: RithmicConfig):
     return RithmicClient(**kwargs)
 
 
+def _submit_via_pyrithmic(spec: RithmicOrderSpec) -> bool:
+    """
+    Fallback submit using pyrithmic (sync, simpler API).
+    Called when async_rithmic is unavailable or connection fails.
+
+    Requires: pip install git+https://github.com/jacksonwoody/pyrithmic.git
+              RITHMIC_CREDENTIALS_PATH env var pointing to folder with .ini files
+    """
+    try:
+        from rithmic import RithmicOrderApi, RithmicEnvironment
+    except ImportError:
+        return False
+
+    creds_dir = Path(os.environ.get("RITHMIC_CREDENTIALS_PATH", Path.home() / ".rithmic"))
+    if not creds_dir.exists():
+        print(f"  ⚠ pyrithmic: RITHMIC_CREDENTIALS_PATH not set or missing ({creds_dir})")
+        return False
+
+    try:
+        env = RithmicEnvironment.RITHMIC_PAPER_TRADING  # always paper until live confirmed
+        api = RithmicOrderApi(env=env)
+        is_buy = spec.direction == "LONG"
+        order = api.submit_bracket_order(
+            order_id          = spec.order_id,
+            security_code     = spec.security_code or spec.root_symbol,
+            exchange_code     = spec.exchange,
+            quantity          = spec.qty,
+            is_buy            = is_buy,
+            limit_price       = spec.entry_price,
+            take_profit_ticks = spec.target_ticks,
+            stop_loss_ticks   = spec.stop_ticks,
+        )
+        print(f"  ✓ pyrithmic: bracket order submitted — {spec.order_id}")
+        print(f"    in_market: {getattr(order, 'in_market', '?')}")
+        return True
+    except Exception as e:
+        print(f"  ⚠ pyrithmic submit failed: {e}")
+        return False
+
+
 def format_order_console(spec: RithmicOrderSpec, guard_reason: str = "") -> str:
     side = "BUY" if spec.direction == "LONG" else "SELL"
     lines = [
@@ -479,8 +522,12 @@ async def execute_orders_async(
             print("  Mode: PAPER (Rithmic paper trading)")
         else:
             print("  ⚠ Mode: LIVE — real Apex account")
-        client = _build_client(config)
-        await client.connect()
+        try:
+            client = _build_client(config)
+            await client.connect()
+        except ImportError:
+            print("  ⚠ async_rithmic not installed — falling back to pyrithmic for submission")
+            client = None  # pyrithmic fallback used per-order below
 
         # Track pending specs by order_id for fill logging
         pending: dict[str, RithmicOrderSpec] = {}
@@ -505,16 +552,18 @@ async def execute_orders_async(
                     )
 
                 # Update apex_state.json after every fill
-                bal = await sync_balance_from_client(client, config)
-                if bal is None:
-                    print("  ⚠ Fill recorded — balance sync returned no data")
+                if client is not None:
+                    bal = await sync_balance_from_client(client, config)
+                    if bal is None:
+                        print("  ⚠ Fill recorded — balance sync returned no data")
             except Exception as exc:
                 print(f"  ⚠ Fill handler error: {exc}")
 
-        try:
-            client.on_exchange_order_notification += on_fill
-        except Exception:
-            pass
+        if client is not None:
+            try:
+                client.on_exchange_order_notification += on_fill
+            except Exception:
+                pass
 
     try:
         default_qty = qty or (config.default_qty if config else 1)
@@ -550,15 +599,29 @@ async def execute_orders_async(
                 results.append({"ticker": sig.ticker, "status": "apex_blocked", "reason": guard_reason})
                 continue
 
-            assert client is not None and config is not None
-            pending[spec.order_id] = spec
-            submit_result = await _submit_bracket(client, config, spec)
+            assert config is not None
+            if client is not None:
+                pending[spec.order_id] = spec
+                submit_result = await _submit_bracket(client, config, spec)
+            else:
+                # async_rithmic unavailable — try pyrithmic sync fallback
+                ok = _submit_via_pyrithmic(spec)
+                submit_result = {
+                    "order_id":      spec.order_id,
+                    "security_code": spec.security_code,
+                    "status":        "submitted" if ok else "pyrithmic_failed",
+                }
+                if not ok:
+                    log_block(sig.ticker, "pyrithmic fallback also failed — no library available")
+                    results.append({"ticker": sig.ticker, "status": "blocked", "reason": "no rithmic library"})
+                    continue
             log_execution(spec, "SUBMITTED", detail=f"order_id={spec.order_id}")
             results.append({"ticker": sig.ticker, "status": "submitted", **submit_result})
 
             # Initial balance sync after submit
             await asyncio.sleep(1.5)
-            await sync_balance_from_client(client, config)
+            if client is not None:
+                await sync_balance_from_client(client, config)
 
     finally:
         if client is not None:
