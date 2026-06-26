@@ -488,23 +488,29 @@ def import_to_notebooklm(path: Path) -> bool:
     """Add the digest to NotebookLM Green Bread Coach(GBC) via notebooklm_bridge."""
     try:
         sys.path.insert(0, str(Path(__file__).parent))
-        from notebooklm_bridge import source_add, source_wait, NOTEBOOK, NOTEBOOK_ID
+        from notebooklm_bridge import (
+            source_add, source_wait, NOTEBOOK, NOTEBOOK_ID, _parse_source_id,
+        )
 
-        print(f"\n[quant_mind] Importing to NotebookLM: '{NOTEBOOK}'")
-        r = source_add(path, notebook=NOTEBOOK, notebook_id=NOTEBOOK_ID)
+        print(f"\n[quant_mind] Importing to NotebookLM: '{NOTEBOOK}' ({NOTEBOOK_ID[:8]}...)")
+        r = source_add(path)
         if r.ok:
             print(f"  ✓ Source added to '{NOTEBOOK}'")
-            print(f"  → Waiting for processing...")
-            rw = source_wait(notebook=NOTEBOOK)
-            if rw.ok:
-                print(f"  ✓ Source grounded — notebook ready to query")
+            source_id = _parse_source_id(r.output)
+            if source_id:
+                print(f"  → Waiting for source {source_id[:12]}...")
+                rw = source_wait(source_id)
+                if rw.ok:
+                    print("  ✓ Source grounded — notebook ready to query")
+                else:
+                    print(f"  ⚠ source_wait: {rw.error} (may still work)")
             else:
-                print(f"  ⚠ source_wait: {rw.error} (may still work)")
+                print(f"  ⚠ Could not parse source ID — skipping wait")
             return True
         else:
             print(f"  ✗ source_add failed: {r.error}")
-            print(f"  Manual fallback:")
-            print(f"    notebooklm source add {path}")
+            print("  Manual fallback:")
+            print(f"    notebooklm source add {path} -n {NOTEBOOK_ID} --json")
             return False
 
     except ImportError:

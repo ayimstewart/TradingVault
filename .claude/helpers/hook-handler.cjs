@@ -152,20 +152,23 @@ const handlers = {
   },
 
   'pre-bash': () => {
-    // Basic command safety check — prefer stdin command data from Claude Code.
-    // String() wrap is belt-and-suspenders for #2017: even if a future regression
-    // re-binds `prompt` or `hookInput.command` to a non-string, `.toLowerCase()`
-    // can no longer throw a TypeError that the global try/catch would swallow
-    // (silently exiting 0 and letting the dangerous command through).
     const cmd = String(hookInput.command || toolInput.command || prompt || '').toLowerCase();
     const dangerous = ['rm -rf /', 'format c:', 'del /s /q c:\\', ':(){:|:&};:'];
     for (const d of dangerous) {
       if (cmd.includes(d)) {
-        console.error(`[BLOCKED] Dangerous command detected: ${d}`);
-        process.exit(1);
+        console.log(JSON.stringify({ decision: 'deny', reason: `Dangerous command: ${d}` }));
+        return;
       }
     }
-    console.log('[OK] Command validated');
+    console.log(JSON.stringify({ decision: 'allow' }));
+  },
+
+  'pre-edit': () => {
+    console.log(JSON.stringify({ decision: 'allow' }));
+  },
+
+  'pre-edit': () => {
+    console.log(JSON.stringify({ decision: 'allow' }));
   },
 
   'post-edit': () => {

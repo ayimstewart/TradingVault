@@ -6,12 +6,13 @@ inside the session loop rather than requiring manual terminal commands.
 
 Install:  pip install notebooklm-py
 Auth:     notebooklm login          (once — stored in ~/.notebooklm/)
-Notebook: Set NOTEBOOKLM_NOTEBOOK env var or pass notebook= to each call.
+Notebook: Green Bread Coach(GBC) — ID used directly for all CLI calls.
 
 All functions return a BridgeResult so callers can degrade gracefully when
 notebooklm-py is not installed or the user hasn't authenticated yet.
 """
 
+import json
 import os
 import subprocess
 import shutil
@@ -20,11 +21,14 @@ from pathlib import Path
 from typing import Optional
 
 
-NOTEBOOK    = os.environ.get("NOTEBOOKLM_NOTEBOOK", "Green Bread Coach(GBC)")
-NOTEBOOK_ID = os.environ.get("NOTEBOOKLM_NOTEBOOK_ID", "57880976-bb78-4efc-9272-de4b83b25358")
-_CLI        = "notebooklm"
+NOTEBOOK    = "Green Bread Coach(GBC)"
+NOTEBOOK_ID = os.environ.get(
+    "NOTEBOOKLM_NOTEBOOK_ID",
+    "57880976-bb78-4efc-9272-de4b83b25358",
+)
+_CLI = "notebooklm"
 
-# Use ID for all CLI calls — name lookup is unreliable with multi-word names.
+# Always pass notebook ID via -n — never rely on name lookup or `notebooklm use`.
 _NB = NOTEBOOK_ID
 
 
@@ -51,8 +55,7 @@ def _authenticated() -> bool:
             [_CLI, "auth", "check", "--test", "--json"],
             capture_output=True, text=True, timeout=30,
         )
-        import json as _json
-        data = _json.loads(proc.stdout)
+        data = json.loads(proc.stdout)
         return data.get("status") == "ok"
     except Exception:
         return False
@@ -86,23 +89,29 @@ def _run(*args: str, timeout: int = 120) -> BridgeResult:
         return BridgeResult(ok=False, output="", error=str(exc))
 
 
+def _parse_source_id(json_output: str) -> Optional[str]:
+    """Extract source ID from `source add --json` response."""
+    try:
+        data = json.loads(json_output)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    source = data.get("source")
+    if isinstance(source, dict) and source.get("id"):
+        return str(source["id"])
+    if data.get("id"):
+        return str(data["id"])
+    return None
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def use_notebook(notebook_id: str = _NB) -> BridgeResult:
-    """Set the active notebook context by ID."""
-    return _run("use", notebook_id)
-
-
-def source_add(
-    path: Path,
-    notebook_id: str = _NB,
-) -> BridgeResult:
+def source_add(path: Path, notebook_id: str = _NB) -> BridgeResult:
     """Add a local file as a source. Returns JSON output containing source ID."""
     return _run("source", "add", str(path), "-n", notebook_id, "--json")
 
 
 def source_wait(source_id: str, notebook_id: str = _NB) -> BridgeResult:
-    """Wait for a specific source to finish processing (requires source ID from source_add)."""
+    """Wait for a specific source to finish processing."""
     return _run("source", "wait", source_id, "-n", notebook_id, timeout=300)
 
 
@@ -111,9 +120,12 @@ def ask(question: str, notebook_id: str = _NB) -> BridgeResult:
     return _run("ask", question, "-n", notebook_id, timeout=120)
 
 
-def note_create(title: str, text: str, notebook_id: str = _NB) -> BridgeResult:
-    """Persist a session note for cross-session recall."""
-    # Correct syntax: notebooklm note create <content> -t <title> -n <id>
+def note_create(text: str, title: str, notebook_id: str = _NB) -> BridgeResult:
+    """
+    Persist a session note for cross-session recall.
+
+    CLI syntax: notebooklm note create "<content>" -t "<title>" -n <notebook_id>
+    """
     return _run("note", "create", text, "-t", title, "-n", notebook_id)
 
 
@@ -134,10 +146,9 @@ def run_morning_queries(
 ) -> dict[str, BridgeResult]:
     """
     Run the full Step 3 sequence:
-      1. Set active notebook (by ID)
-      2. Import today's morning brief (if path provided)
-      3. Wait for source processing
-      4. Ask all morning questions
+      1. Import today's morning brief (if path provided)
+      2. Wait for source processing (by source ID)
+      3. Ask all morning questions
     Returns a dict of {question: BridgeResult}.
     """
     results: dict[str, BridgeResult] = {}
@@ -146,57 +157,53 @@ def run_morning_queries(
         if verbose:
             print(msg)
 
-    log(f"\n[STEP 3] Querying NotebookLM — {notebook} ({_NB})")
+    log(f"\n[STEP 3] Querying NotebookLM — {notebook}")
+    log(f"  Notebook ID: {_NB}")
 
-    # 0. Check auth before attempting any CLI calls
     if not _available():
-        r = BridgeResult(ok=False, output="", error="notebooklm-py not installed. Run: pip install notebooklm-py")
+        r = BridgeResult(
+            ok=False, output="",
+            error="notebooklm-py not installed. Run: pip install notebooklm-py",
+        )
         log(f"  ✗ {r.error}")
         _print_manual_fallback(brief_path)
         return {"_setup": r}
 
     if not _authenticated():
-        r = BridgeResult(ok=False, output="", error=(
-            "NotebookLM not authenticated. Run:  notebooklm login\n"
-            "  Then re-run this session to enable grounded research."
-        ))
+        r = BridgeResult(
+            ok=False, output="",
+            error=(
+                "NotebookLM not authenticated. Run:  notebooklm login\n"
+                "  Then re-run this session to enable grounded research."
+            ),
+        )
         log(f"  ✗ {r.error}")
         _print_manual_fallback(brief_path)
         return {"_setup": r}
 
-    # 1. Activate notebook by ID
-    r = use_notebook()
-    if not r.ok:
-        log(f"  ✗ Could not activate notebook {_NB}: {r.error}")
-        log(f"  → Fallback: run these manually:")
-        _print_manual_fallback(brief_path)
-        return {"_setup": r}
+    log(f"  ✓ Authenticated — using notebook ID {_NB[:8]}...")
 
-    log(f"  ✓ Notebook active: {notebook}")
-
-    # 2. Add morning brief source
+    # 1. Add morning brief source
     if brief_path and brief_path.exists():
         log(f"  → Adding source: {brief_path.name}")
         r = source_add(brief_path)
         if r.ok:
-            log(f"  ✓ Source added")
-            # 3. Wait for grounding using source ID from JSON response
-            try:
-                import json as _json
-                source_id = _json.loads(r.output)["source"]["id"]
-                log(f"  → Waiting for source {source_id[:8]}... to process")
-                r = source_wait(source_id)
-                if r.ok:
-                    log(f"  ✓ Source grounded")
+            log("  ✓ Source added")
+            source_id = _parse_source_id(r.output)
+            if source_id:
+                log(f"  → Waiting for source {source_id[:12]}...")
+                rw = source_wait(source_id)
+                if rw.ok:
+                    log("  ✓ Source grounded")
                 else:
-                    log(f"  ⚠ source wait failed (may still work): {r.error}")
-            except (KeyError, ValueError, Exception) as e:
-                log(f"  ⚠ Could not parse source ID — skipping wait: {e}")
+                    log(f"  ⚠ source wait failed (may still work): {rw.error}")
+            else:
+                log(f"  ⚠ Could not parse source ID from: {r.output[:120]}")
         else:
             log(f"  ⚠ Source add failed (continuing): {r.error}")
 
-    # 4. Ask all morning questions
-    log(f"\n  [NotebookLM Responses]")
+    # 2. Ask all morning questions
+    log("\n  [NotebookLM Responses]")
     for q in MORNING_QUESTIONS:
         log(f"\n  Q: {q}")
         r = ask(q)
@@ -226,10 +233,10 @@ def save_session_note(
     if verbose:
         print(f"\n  → Saving session note: '{title}'")
 
-    r = note_create(title, summary)
+    r = note_create(text=summary, title=title)
     if verbose:
         if r.ok:
-            print(f"  ✓ Session note saved to '{notebook}'")
+            print(f"  ✓ Session note saved to '{notebook}' ({_NB[:8]}...)")
         else:
             print(f"  ✗ Note save failed: {r.error}")
     return r
@@ -242,15 +249,14 @@ def _print_manual_fallback(brief_path: Optional[Path] = None) -> None:
     from datetime import datetime, timezone
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    print(f"\n  ── Manual fallback (METHOD B) ──────────────────────")
-    print(f"  notebooklm use {_NB}")
+    print("\n  ── Manual fallback (METHOD B) ──────────────────────")
     if brief_path:
-        print(f"  notebooklm source add {brief_path} -n {_NB}")
-        print(f"  notebooklm source wait -n {_NB}")
+        print(f"  notebooklm source add {brief_path} -n {_NB} --json")
+        print(f"  notebooklm source wait <SOURCE_ID> -n {_NB}")
     for q in MORNING_QUESTIONS:
         print(f"  notebooklm ask '{q}' -n {_NB}")
-    print(f"  notebooklm note create '<paste summary here>' -t 'Session {today}' -n {_NB}")
-    print(f"  ────────────────────────────────────────────────────\n")
+    print(f"  notebooklm note create '<summary>' -t 'Session {today}' -n {_NB}")
+    print("  ────────────────────────────────────────────────────\n")
 
 
 # ── CLI entry point ───────────────────────────────────────────────────────────
@@ -265,10 +271,10 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"notebooklm-py detected at: {shutil.which(_CLI)}")
-    print(f"Active notebook: {NOTEBOOK} ({_NB})")
+    print(f"Notebook: {NOTEBOOK}")
+    print(f"Notebook ID: {_NB}")
     print()
 
-    # Quick connectivity test (use ID, not name)
     r = ask("What is the main purpose of this notebook?")
     if r.ok:
         print("Connection OK:")
