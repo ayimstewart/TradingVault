@@ -34,15 +34,15 @@ Check off as you go by updating this file.
 - [x] Phase 1: signal_checker.py (Cockpit Checklist enforcement)
 - [x] Phase 1: run_session.py (morning brief loop)
 - [x] Phase 1: Reference repos added (AI-Trader, Kronos, notebooklm-py, llmwiki)
-- [ ] Phase 2: Fix Kraken data fetch — confirm live data runs clean
-- [ ] Phase 2: harmonic_detector.py (Gartley/Butterfly pattern logic)
-- [ ] Phase 2: backtester.py (test signals on historical data)
-- [ ] Phase 2: notebooklm_bridge.py (query NotebookLM from terminal)
-- [ ] Phase 3: tradingview_mcp.py (live chart data via MCP)
-- [ ] Phase 3: morning_brief_auto.py (scheduled daily run)
-- [ ] Phase 3: kronos_probability.py (candlestick probability layer)
-- [ ] Phase 4: AI-Trader integration (publish signals to platform)
-- [ ] Phase 4: llmwiki_sync.py (auto-update wiki from new sources)
+- [x] Phase 2: Fix Kraken data fetch — confirm live data runs clean
+- [x] Phase 2: harmonic_detector.py (Gartley/Butterfly pattern logic)
+- [x] Phase 2: backtester.py (test signals on historical data)
+- [x] Phase 2: notebooklm_bridge.py (query NotebookLM from terminal)
+- [x] Phase 3: tradingview_mcp.py (live chart data via MCP)
+- [x] Phase 3: morning_brief_auto.py (scheduled daily run)
+- [x] Phase 3: kronos_probability.py (candlestick probability layer)
+- [x] Phase 4: AI-Trader integration (publish signals to platform)
+- [x] Phase 4: llmwiki_sync.py (auto-update wiki from new sources)
 
 ## How to Build Each Item
 

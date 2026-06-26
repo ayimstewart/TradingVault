@@ -58,3 +58,39 @@ Session Bias options: BULLISH / BEARISH / NEUTRAL / WAIT
 > Completed briefs go below this line, newest first.
 
 ---
+
+## Morning Brief — 2026-06-26
+
+### Market Context
+- Macro event risk today: none confirmed
+- Overall crypto sentiment: risk-off (all watch list assets FANNING-BEAR)
+- Reference: sources/2026-06-26-morning-brief.md
+
+### Watch List — Weekly (1W) Bias
+
+| Asset | 1W Trend | EMA Status | 1W Bias | ATR(7) | Session Bias |
+|-------|----------|------------|---------|--------|--------------|
+| BTC | FANNING-BEAR | 8<20<50 | BEARISH | 5695.16 | WAIT |
+| ETH | FANNING-BEAR | 8<20<50 | BEARISH | 221.36 | WAIT |
+| SOL | FANNING-BEAR | 8<20<50 | BEARISH | 10.13 | WAIT |
+| XRP | FANNING-BEAR | 8<20<50 | BEARISH | 0.14 | WAIT |
+| LINK | FANNING-BEAR | 8<20<50 | BEARISH | 0.97 | WATCH — Gartley D pending |
+| PEPE | FLAT | no data | NEUTRAL | 0.00 | NO TRADE |
+
+### Price Alerts
+
+| Asset | Alert Level | Pattern | Action on Touch |
+|-------|-------------|---------|-----------------|
+| **LINK** | **$8.4746** | **Gartley D-point** | Re-run harmonic_detector.py — confirm D-point completion, check body rule, calculate entry + ATR(7) stop before signal |
+
+> LINK close: $7.2938 | Distance to alert: +$1.1808 (+16.2%) | ATR(7): $0.9743
+> Alert fires ~1.2 ATR above current price — do NOT enter early. Wait for D-point touch + candle confirmation.
+
+### Priority Assets This Session
+1. LINK — Gartley D pending at 8.4746; all other assets FANNING-BEAR with no clean setup
+
+### Behavioral Check (Pre-Session)
+- Silly Donation risk: watch for FOMO entry before D-point is reached
+- Rule: No signal until D-point confirmed + body rule passes + ATR(7) stop set
+
+---

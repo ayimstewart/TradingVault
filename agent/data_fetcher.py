@@ -26,14 +26,27 @@ WATCH_LIST = {
     "PEPE": "PEPE/USD",
 }
 
-# ── Timeframes (Kraken format) ─────────────────────────────────────────────
+# ── Timeframes (ccxt/Kraken format — lowercase required) ───────────────────
 # Weekly bias FIRST — rules.md is non-negotiable on this
 TIMEFRAMES = {
-    "1w": "1W",   # Primary bias — assessed before anything else
-    "1d": "1D",   # Daily confirmation
+    "1w": "1w",   # Primary bias — assessed before anything else
+    "1d": "1d",   # Daily confirmation
     "4h": "4h",   # Entry timeframe
     "1h": "1h",   # Fine-tuning (optional)
 }
+
+# Aliases for human-readable labels (TradingView uses 1W; ccxt uses 1w)
+TIMEFRAME_ALIASES = {
+    "1W": "1w",
+    "1D": "1d",
+    "4H": "4h",
+    "1H": "1h",
+}
+
+
+def normalize_timeframe(timeframe: str) -> str:
+    """Map display labels (1W) to ccxt-native strings (1w)."""
+    return TIMEFRAME_ALIASES.get(timeframe, timeframe)
 
 CANDLES_TO_FETCH = 100   # Enough history for EMA(50) + ATR(7) + pattern work
 
@@ -58,6 +71,7 @@ def fetch_ohlcv(
     limit: int = CANDLES_TO_FETCH,
 ) -> pd.DataFrame:
     """Fetch OHLCV candles and return as a clean DataFrame."""
+    timeframe = normalize_timeframe(timeframe)
     raw = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
@@ -114,7 +128,7 @@ def check_body_rule(row: pd.Series, direction: str) -> bool:
     return False
 
 
-def fetch_all_assets(timeframe: str = "1W") -> dict:
+def fetch_all_assets(timeframe: str = "1w") -> dict:
     """Fetch OHLCV + indicators for all watch list assets at a given timeframe."""
     exchange = get_exchange()
     results  = {}
@@ -141,7 +155,7 @@ def fetch_all_assets(timeframe: str = "1W") -> dict:
 
             results[ticker] = df
 
-            print(f"  {ticker:<5} | Close: {latest['close']:>12.4f} | "
+            print(f"  {ticker:<5} | Close: {latest['close']:>12.8g} | "
                   f"ATR(7): {latest['atr_7']:>10.4f} | "
                   f"Trend: {trend:<14} | Body: {'PASS' if body_valid else 'FAIL'}")
 
@@ -210,7 +224,7 @@ def run_morning_brief():
     print("  Exchange: Kraken (no geo-restrictions)")
     print("="*50)
 
-    weekly_data = fetch_all_assets(timeframe="1W")
+    weekly_data = fetch_all_assets(timeframe="1w")
     brief_data  = {ticker: {"df": df} for ticker, df in weekly_data.items()}
     brief_path  = save_morning_brief(brief_data)
 

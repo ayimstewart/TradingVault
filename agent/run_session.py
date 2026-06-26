@@ -6,17 +6,20 @@ It follows the CLAUDE.md Session Initialization Protocol exactly.
 
 Usage:
     python run_session.py
+    python run_session.py --account 10000     # enables position sizing on 4H entries
 
 What it does (in order, per CLAUDE.md):
     1. Reads rules/rules.md  (confirms checklist is loaded)
     2. Reads last 5 log entries from decisions-log.md
-    3. Fetches 1W data for all 6 watch list assets
-    4. Runs full Cockpit Checklist on each
+    3a. Fetches 1W data for all 6 watch list assets
+    3b. Runs Cockpit Checklist + Harmonic Scan on 1W data
+    4. For FANNING assets: drills to 4H and finds entry setups + sizes positions
     5. Saves Morning Brief to sources/YYYY-MM-DD-morning-brief.md
     6. Logs valid signals to decisions-log.md
-    7. Prints NotebookLM commands to run next
+    7. Queries NotebookLM (grounded research) + saves session note
 """
 
+import argparse
 from pathlib import Path
 from datetime import datetime, timezone
 import sys
@@ -24,8 +27,11 @@ import sys
 # Add agent/ to path so imports work
 sys.path.insert(0, str(Path(__file__).parent))
 
-from data_fetcher   import fetch_all_assets, save_morning_brief
-from signal_checker import run_full_checklist, append_to_decisions_log
+from data_fetcher        import fetch_all_assets, save_morning_brief
+from signal_checker      import run_full_checklist, append_to_decisions_log
+from harmonic_detector   import scan_watch_list
+from entry_finder        import find_4h_entries
+from notebooklm_bridge   import run_morning_queries, save_session_note, _print_manual_fallback
 
 
 VAULT_ROOT   = Path(__file__).parent.parent
@@ -110,18 +116,39 @@ def step_2_load_behavioral_state() -> float:
 
 
 def step_3_fetch_data() -> dict:
-    """Step 3: Fetch 1W OHLCV for all watch list assets."""
-    print("\n[STEP 3] Fetching 1W data (weekly bias — assessed FIRST)...")
-    return fetch_all_assets(timeframe="1W")
+    """Step 3a: Fetch 1W OHLCV for all watch list assets."""
+    print("\n[STEP 3a] Fetching 1W data (weekly bias — assessed FIRST)...")
+    return fetch_all_assets(timeframe="1w")
 
 
 def step_4_run_checklist(
     weekly_data: dict,
     capital_pct: float,
 ) -> list:
-    """Step 4: Run Cockpit Checklist on all assets."""
-    print("\n[STEP 4] Running Cockpit Checklist...")
-    return run_full_checklist(weekly_data, timeframe="1W", capital_pct=capital_pct)
+    """Step 4a/b: Run Cockpit Checklist + Harmonic Scan on 1W data."""
+    print("\n[STEP 4a] Running Cockpit Checklist (1W)...")
+    results = run_full_checklist(weekly_data, timeframe="1w", capital_pct=capital_pct)
+
+    print("\n[STEP 4b] Running Harmonic Scan (1W)...")
+    scan_watch_list(weekly_data, timeframe="1w")
+
+    return results
+
+
+def step_4c_find_entries(
+    weekly_results: list,
+    capital_pct: float,
+    account_balance: float | None,
+) -> list:
+    """Step 4c: Drill to 4H for FANNING assets and find entry setups."""
+    print("\n[STEP 4c] 4H Entry Finder (FANNING assets only)...")
+    return find_4h_entries(
+        weekly_results,
+        account_balance=account_balance,
+        risk_pct=1.0,
+        capital_pct=capital_pct,
+        verbose=True,
+    )
 
 
 def step_5_save_brief(weekly_data: dict) -> Path:
@@ -137,34 +164,53 @@ def step_6_log_signals(results: list) -> None:
     append_to_decisions_log(results, vault_root=VAULT_ROOT)
 
 
-def step_7_notebooklm_commands(brief_path: Path) -> None:
-    """Step 7: Print the exact NotebookLM commands to run next."""
+def step_7_notebooklm_query(brief_path: Path, signal_results: list) -> None:
+    """
+    Step 7: Query NotebookLM (Step 3 of CLAUDE.md Session Protocol).
+    Imports today's brief, waits for grounding, runs morning questions.
+    Falls back to printed manual commands if notebooklm-py isn't installed.
+    """
+    print(f"\n{'='*55}")
+    print(f"  [STEP 7] NotebookLM — Grounded Research Layer")
+    print(f"{'='*55}")
+
+    nlm_results = run_morning_queries(brief_path=brief_path, verbose=True)
+
+    # If bridge returned an error result only, show manual fallback
+    if "_setup" in nlm_results and not nlm_results["_setup"].ok:
+        return
+
+    # Build session summary and save as persistent note
+    valid_signals = [r for r in signal_results if getattr(r, "signal_type", None)
+                     and r.signal_type.value != "NONE"]
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    print(f"\n{'='*55}")
-    print(f"  [STEP 7] NEXT: Query NotebookLM")
-    print(f"{'='*55}")
-    print(f"\n  Run these commands in your terminal:\n")
-    print(f"  # Import today's brief into your notebook:")
-    print(f"  notebooklm use 'Master Brain'")
-    print(f"  notebooklm source add {brief_path}")
-    print(f"  notebooklm source wait")
-    print(f"")
-    print(f"  # Then ask grounded questions:")
-    print(f"  notebooklm ask 'Summarize the {today} morning brief'")
-    print(f"  notebooklm ask 'Which assets have the cleanest EMA fan today?'")
-    print(f"  notebooklm ask 'What does my strategy say about CONVERGING assets?'")
-    print(f"")
-    print(f"  # Save session to persistent memory:")
-    print(f"  notebooklm note create 'Session {today}: <paste signal summary>'")
-    print(f"{'='*55}\n")
+    if valid_signals:
+        signal_lines = "\n".join(
+            f"- {getattr(r, 'ticker', '?')}: {getattr(r, 'signal_type', '?').value} "
+            f"| Stop: {getattr(r, 'stop_loss', '?')} | Target: {getattr(r, 'target', '?')}"
+            for r in valid_signals
+        )
+        summary = f"Session {today} — {len(valid_signals)} valid signal(s):\n{signal_lines}"
+    else:
+        summary = f"Session {today} — No valid signals. All assets CONVERGING or FLAT."
+
+    save_session_note(summary, verbose=True)
+    print(f"\n{'='*55}\n")
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Trading Agent — Session Initialization")
+    parser.add_argument(
+        "--account", type=float, default=None,
+        help="Account balance in USD for position sizing (e.g. --account 10000)",
+    )
+    args = parser.parse_args()
+
     print("\n" + "="*55)
     print("  TRADING AGENT — SESSION INITIALIZATION")
     print(f"  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    print("  Following CLAUDE.md protocol — 7 steps")
+    print(f"  Account: {'${:,.2f}'.format(args.account) if args.account else 'not set (sizing disabled)'}")
     print("="*55)
 
     # Step 1 — Rules
@@ -176,11 +222,14 @@ def main():
     if capital_pct < 70:
         sys.exit(1)   # Hard stop per capital protocol
 
-    # Step 3 — Fetch data
+    # Step 3a — Fetch 1W data
     weekly_data = step_3_fetch_data()
 
-    # Step 4 — Checklist
+    # Step 4a/b — Checklist + Harmonic scan
     results = step_4_run_checklist(weekly_data, capital_pct)
+
+    # Step 4c — 4H entry drill-down (FANNING assets only)
+    step_4c_find_entries(results, capital_pct, args.account)
 
     # Step 5 — Save brief
     brief_path = step_5_save_brief(weekly_data)
@@ -188,11 +237,11 @@ def main():
     # Step 6 — Log signals
     step_6_log_signals(results)
 
-    # Step 7 — NotebookLM instructions
-    step_7_notebooklm_commands(brief_path)
+    # Step 7 — NotebookLM grounded query + persistent session note
+    step_7_notebooklm_query(brief_path, results)
 
     print("Session initialization complete.")
-    print("Weekly bias confirmed. Check 4H only for FANNING assets.\n")
+    print("Weekly bias confirmed. 4H entries assessed. Check 4H again at next close.\n")
 
 
 if __name__ == "__main__":
