@@ -16,3 +16,6 @@
 [submodule "references/quant-mind"]
 	path = references/quant-mind
 	url = https://github.com/LLMQuant/quant-mind.git
+[submodule "references/turbovec"]
+	path = references/turbovec
+	url = https://github.com/RyanCodrai/turbovec.git
