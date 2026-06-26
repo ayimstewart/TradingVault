@@ -13,3 +13,6 @@
 [submodule "references/ruflo"]
 	path = references/ruflo
 	url = https://github.com/ruvnet/ruflo.git
+[submodule "references/quant-mind"]
+	path = references/quant-mind
+	url = https://github.com/LLMQuant/quant-mind.git
