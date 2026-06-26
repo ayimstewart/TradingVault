@@ -1,20 +1,22 @@
 """
-quant_mind_fetcher.py — Daily quant research digest from arXiv.
+quant_mind_fetcher.py — Daily research digest: arXiv + web + social.
 
-Inspired by QuantMind (references/quant-mind) but runs standalone without
-requiring the QuantMind package. Fetches recent finance/crypto/trading
-papers from arXiv, formats them as a markdown digest, saves to sources/,
-and auto-imports to NotebookLM notebook Green Bread Coach(GBC).
+Pulls from multiple sources using agent-reach channels:
+  - arXiv q-fin.* categories (academic papers — always on)
+  - YouTube: yt-dlp search for trading videos (if installed)
+  - Web:     Jina Reader for trading articles (free, no auth)
+  - Reddit:  rdt-cli or OpenCLI (if configured and authenticated)
+  - Twitter: twitter-cli (if configured and authenticated)
 
-Designed to run as part of the morning brief (before signal generation)
-so the research layer is grounded before NotebookLM queries.
+Saves to sources/YYYY-MM-DD-quant-research.md and auto-imports to
+NotebookLM Green Bread Coach(GBC) for grounded morning brief queries.
 
 Usage:
-    python3 quant_mind_fetcher.py                  # fetch today's digest
-    python3 quant_mind_fetcher.py --days 7         # last 7 days of papers
-    python3 quant_mind_fetcher.py --max 20         # cap at 20 papers
+    python3 quant_mind_fetcher.py                  # all sources, today
+    python3 quant_mind_fetcher.py --days 7         # look back 7 days
+    python3 quant_mind_fetcher.py --no-web         # arXiv only
     python3 quant_mind_fetcher.py --no-import      # skip NotebookLM import
-    python3 quant_mind_fetcher.py --dry-run        # print digest, don't save
+    python3 quant_mind_fetcher.py --dry-run        # print, don't save
 """
 
 from __future__ import annotations
@@ -175,7 +177,7 @@ def fetch_all_papers(
 
 # ── Markdown formatter ────────────────────────────────────────────────────────
 
-def format_digest(papers: list[Paper], days: int) -> str:
+def format_digest(papers: list[Paper], days: int, web_items: list[WebResult] | None = None) -> str:
     """Render the paper list as a markdown digest for NotebookLM import."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     lines = [
@@ -221,10 +223,253 @@ def format_digest(papers: list[Paper], days: int) -> str:
     for q in SEARCH_QUERIES:
         lines.append(f"- {q}")
 
+    if web_items:
+        lines.append(format_web_section(web_items))
+
     lines += [
         "",
         f"*Generated: {datetime.now(timezone.utc).isoformat()}*",
     ]
+
+    return "\n".join(lines)
+
+
+# ── Web / social fetch via agent-reach ───────────────────────────────────────
+
+YOUTUBE_QUERIES = [
+    "crypto trading EMA strategy 2026",
+    "bitcoin technical analysis weekly",
+    "LINK chainlink price analysis",
+    "harmonic patterns crypto Gartley",
+]
+
+REDDIT_QUERIES = [
+    "site:reddit.com/r/CryptoMarkets crypto trading strategy",
+    "site:reddit.com/r/ethtrader ethereum technical analysis",
+    "site:reddit.com/r/Chainlink LINK price",
+]
+
+TWITTER_QUERIES = [
+    "crypto EMA trading strategy",
+    "bitcoin weekly bias",
+    "LINK Chainlink technical analysis",
+]
+
+JINA_READER = "https://r.jina.ai/"
+
+
+@dataclass
+class WebResult:
+    source: str          # "youtube" | "reddit" | "twitter" | "web"
+    title: str
+    url: str
+    snippet: str
+    fetched_at: str
+
+
+def _fetch_youtube(max_per_query: int = 3) -> list[WebResult]:
+    """Search YouTube for trading content via yt-dlp."""
+    import shutil
+    import subprocess
+    import json as _json
+
+    if not shutil.which("yt-dlp"):
+        print("  [youtube] yt-dlp not found — skipping")
+        return []
+
+    results: list[WebResult] = []
+    seen: set[str] = set()
+
+    for query in YOUTUBE_QUERIES[:2]:   # limit queries to keep runtime short
+        cmd = [
+            "yt-dlp",
+            f"ytsearch{max_per_query}:{query}",
+            "--dump-json", "--skip-download", "--no-playlist",
+            "--quiet",
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            for line in proc.stdout.splitlines():
+                try:
+                    v = _json.loads(line)
+                    vid_id = v.get("id", "")
+                    if vid_id in seen:
+                        continue
+                    seen.add(vid_id)
+                    desc = (v.get("description") or "")[:300].replace("\n", " ")
+                    results.append(WebResult(
+                        source="youtube",
+                        title=v.get("title", "")[:120],
+                        url=f"https://youtube.com/watch?v={vid_id}",
+                        snippet=desc,
+                        fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    ))
+                except (_json.JSONDecodeError, KeyError):
+                    continue
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            print(f"  [youtube] Error for '{query}': {exc}")
+
+    print(f"  [youtube] {len(results)} videos found")
+    return results
+
+
+def _fetch_jina_articles() -> list[WebResult]:
+    """Fetch curated trading blog articles via Jina Reader."""
+    # Jina Reader: GET r.jina.ai/<url> returns clean markdown text of any page
+    URLS = [
+        "https://www.tradingview.com/ideas/crypto/",
+        "https://coincodex.com/crypto/chainlink/",
+    ]
+    results: list[WebResult] = []
+
+    for url in URLS:
+        try:
+            resp = requests.get(f"{JINA_READER}{url}", timeout=20, headers={
+                "Accept": "text/plain",
+                "X-Return-Format": "markdown",
+            })
+            if resp.status_code == 200:
+                text = resp.text[:800].replace("\n", " ").strip()
+                results.append(WebResult(
+                    source="web",
+                    title=url.split("/")[2],
+                    url=url,
+                    snippet=text,
+                    fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                ))
+        except Exception as exc:
+            print(f"  [web] Jina fetch failed for {url}: {exc}")
+
+    print(f"  [web] {len(results)} articles fetched via Jina Reader")
+    return results
+
+
+def _fetch_reddit() -> list[WebResult]:
+    """Search Reddit via rdt-cli if authenticated, else skip."""
+    import shutil
+    import subprocess
+
+    rdt = shutil.which("rdt")
+    if not rdt:
+        print("  [reddit] rdt-cli not installed — skipping (run: pipx install rdt-cli)")
+        return []
+
+    results: list[WebResult] = []
+    for query in ["crypto trading EMA momentum", "LINK chainlink analysis"]:
+        try:
+            proc = subprocess.run(
+                [rdt, "search", query, "--limit", "3", "--json"],
+                capture_output=True, text=True, timeout=20,
+            )
+            if proc.returncode != 0:
+                print(f"  [reddit] Auth required — run: rdt login")
+                break
+            import json as _json
+            data = _json.loads(proc.stdout or "[]")
+            for item in (data if isinstance(data, list) else []):
+                results.append(WebResult(
+                    source="reddit",
+                    title=item.get("title", "")[:120],
+                    url=item.get("url", ""),
+                    snippet=(item.get("selftext") or item.get("body") or "")[:300],
+                    fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                ))
+        except Exception as exc:
+            print(f"  [reddit] Error: {exc}")
+            break
+
+    print(f"  [reddit] {len(results)} posts found")
+    return results
+
+
+def _fetch_twitter() -> list[WebResult]:
+    """Search Twitter via twitter-cli if installed, else skip."""
+    import shutil
+    import subprocess
+
+    tw = shutil.which("twitter")
+    if not tw:
+        print("  [twitter] twitter-cli not installed — skipping")
+        print("  Install: pipx install twitter-cli  then  twitter login")
+        return []
+
+    results: list[WebResult] = []
+    for query in ["crypto EMA trading", "$LINK technical analysis"]:
+        try:
+            proc = subprocess.run(
+                [tw, "search", query, "--count", "3", "--json"],
+                capture_output=True, text=True, timeout=20,
+            )
+            if proc.returncode != 0:
+                print(f"  [twitter] Auth required — run: twitter login")
+                break
+            import json as _json
+            tweets = _json.loads(proc.stdout or "[]")
+            for t in (tweets if isinstance(tweets, list) else []):
+                results.append(WebResult(
+                    source="twitter",
+                    title=f"@{t.get('username', 'unknown')}",
+                    url=t.get("url", ""),
+                    snippet=t.get("text", "")[:300],
+                    fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                ))
+        except Exception as exc:
+            print(f"  [twitter] Error: {exc}")
+            break
+
+    print(f"  [twitter] {len(results)} tweets found")
+    return results
+
+
+def fetch_web_content(skip_web: bool = False) -> list[WebResult]:
+    """Fetch from all available web/social channels via agent-reach."""
+    if skip_web:
+        return []
+    print(f"\n[quant_mind] Fetching web/social content via agent-reach...")
+    results: list[WebResult] = []
+    results.extend(_fetch_youtube())
+    results.extend(_fetch_jina_articles())
+    results.extend(_fetch_reddit())
+    results.extend(_fetch_twitter())
+    print(f"  → {len(results)} total web/social items")
+    return results
+
+
+def format_web_section(items: list[WebResult]) -> str:
+    """Render web/social results as markdown section."""
+    if not items:
+        return ""
+
+    lines = [
+        "",
+        "---",
+        "",
+        "## Web & Social Content",
+        "",
+        f"> Sources: {', '.join(sorted({i.source for i in items}))} | "
+        f"via agent-reach channels",
+        "",
+    ]
+
+    by_source: dict[str, list[WebResult]] = {}
+    for item in items:
+        by_source.setdefault(item.source, []).append(item)
+
+    source_labels = {"youtube": "YouTube", "web": "Web Articles",
+                     "reddit": "Reddit", "twitter": "Twitter/X"}
+
+    for source, label in source_labels.items():
+        group = by_source.get(source, [])
+        if not group:
+            continue
+        lines += [f"### {label}", ""]
+        for r in group:
+            lines += [
+                f"**{r.title}**  ",
+                f"{r.url}  ",
+                f"> {r.snippet}" if r.snippet else "",
+                "",
+            ]
 
     return "\n".join(lines)
 
@@ -280,12 +525,15 @@ def main() -> None:
                         help="Max papers per search query (default: 5)")
     parser.add_argument("--no-import", action="store_true",
                         help="Skip NotebookLM import (save file only)")
+    parser.add_argument("--no-web",    action="store_true",
+                        help="Skip web/social fetch (arXiv only)")
     parser.add_argument("--dry-run",   action="store_true",
                         help="Print digest only — do not save or import")
     args = parser.parse_args()
 
-    papers  = fetch_all_papers(days=args.days, max_per_query=args.max)
-    digest  = format_digest(papers, days=args.days)
+    papers    = fetch_all_papers(days=args.days, max_per_query=args.max)
+    web_items = fetch_web_content(skip_web=args.no_web)
+    digest    = format_digest(papers, days=args.days, web_items=web_items)
 
     if args.dry_run:
         print("\n" + "═" * 60)
