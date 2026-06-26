@@ -6,11 +6,11 @@
 
 | Asset | Close | EMA 8 | EMA 20 | EMA 50 | ATR(7) | Trend | Body Rule |
 |-------|-------|-------|--------|--------|--------|-------|-----------|
-| BTC | 60117.2000 | 65902.0667 | 72083.8140 | 81412.2319 | 5695.1616 | FANNING-BEAR | FAIL |
-| ETH | 1578.9100 | 1808.0572 | 2103.3611 | 2515.5955 | 221.3567 | FANNING-BEAR | FAIL |
-| SOL | 71.4800 | 74.3831 | 86.7049 | 114.8021 | 10.1316 | FANNING-BEAR | FAIL |
-| XRP | 1.0424 | 1.1829 | 1.3725 | 1.6910 | 0.1372 | FANNING-BEAR | FAIL |
-| LINK | 7.2938 | 8.1618 | 9.3065 | 11.7299 | 0.9743 | FANNING-BEAR | FAIL |
+| BTC | 59684.9000 | 65806.0000 | 72042.6425 | 81395.2790 | 5695.1616 | FANNING-BEAR | FAIL |
+| ETH | 1572.5300 | 1806.6395 | 2102.7535 | 2515.3453 | 221.3567 | FANNING-BEAR | FAIL |
+| SOL | 72.5200 | 74.6142 | 86.8040 | 114.8429 | 10.5191 | FANNING-BEAR | FAIL |
+| XRP | 1.0411 | 1.1826 | 1.3724 | 1.6909 | 0.1372 | FANNING-BEAR | FAIL |
+| LINK | 7.3101 | 8.1654 | 9.3081 | 11.7305 | 0.9743 | FANNING-BEAR | FAIL |
 | PEPE | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | FANNING-BEAR | FAIL |
 
 ## Key
@@ -20,4 +20,4 @@
 - Body Rule: close must be in upper 30% (bull) or lower 30% (bear)
 - ATR(7) = dynamic stop-loss distance (rules.md §4)
 
-*Generated: 2026-06-26T15:29:24.913101+00:00*
+*Generated: 2026-06-26T18:41:11.151955+00:00*

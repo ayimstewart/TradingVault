@@ -24,6 +24,9 @@ NOTEBOOK    = os.environ.get("NOTEBOOKLM_NOTEBOOK", "Green Bread Coach(GBC)")
 NOTEBOOK_ID = os.environ.get("NOTEBOOKLM_NOTEBOOK_ID", "57880976-bb78-4efc-9272-de4b83b25358")
 _CLI        = "notebooklm"
 
+# Use ID for all CLI calls — name lookup is unreliable with multi-word names.
+_NB = NOTEBOOK_ID
+
 
 @dataclass
 class BridgeResult:
@@ -85,36 +88,33 @@ def _run(*args: str, timeout: int = 120) -> BridgeResult:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def use_notebook(notebook: str = NOTEBOOK) -> BridgeResult:
-    """Set the active notebook for subsequent CLI calls."""
-    return _run("use", notebook)
+def use_notebook(notebook_id: str = _NB) -> BridgeResult:
+    """Set the active notebook context by ID."""
+    return _run("use", notebook_id)
 
 
 def source_add(
     path: Path,
-    notebook: str = NOTEBOOK,
-    notebook_id: str = NOTEBOOK_ID,
+    notebook_id: str = _NB,
 ) -> BridgeResult:
-    """Add a local file as a source in the notebook."""
-    args = ["source", "add", str(path), "--notebook", notebook]
-    if notebook_id:
-        args += ["--notebook-id", notebook_id]
-    return _run(*args)
+    """Add a local file as a source. Returns JSON output containing source ID."""
+    return _run("source", "add", str(path), "-n", notebook_id, "--json")
 
 
-def source_wait(notebook: str = NOTEBOOK) -> BridgeResult:
-    """Block until all pending sources finish processing (grounding completes)."""
-    return _run("source", "wait", "--notebook", notebook, timeout=300)
+def source_wait(source_id: str, notebook_id: str = _NB) -> BridgeResult:
+    """Wait for a specific source to finish processing (requires source ID from source_add)."""
+    return _run("source", "wait", source_id, "-n", notebook_id, timeout=300)
 
 
-def ask(question: str, notebook: str = NOTEBOOK) -> BridgeResult:
+def ask(question: str, notebook_id: str = _NB) -> BridgeResult:
     """Ask a grounded question; answers cite your notebook sources."""
-    return _run("ask", question, "--notebook", notebook, timeout=120)
+    return _run("ask", question, "-n", notebook_id, timeout=120)
 
 
-def note_create(title: str, text: str, notebook: str = NOTEBOOK) -> BridgeResult:
+def note_create(title: str, text: str, notebook_id: str = _NB) -> BridgeResult:
     """Persist a session note for cross-session recall."""
-    return _run("note", "create", title, text, "--notebook", notebook)
+    # Correct syntax: notebooklm note create <content> -t <title> -n <id>
+    return _run("note", "create", text, "-t", title, "-n", notebook_id)
 
 
 # ── Session Step 3 — Morning Brief query sequence ────────────────────────────
@@ -134,7 +134,7 @@ def run_morning_queries(
 ) -> dict[str, BridgeResult]:
     """
     Run the full Step 3 sequence:
-      1. Set active notebook
+      1. Set active notebook (by ID)
       2. Import today's morning brief (if path provided)
       3. Wait for source processing
       4. Ask all morning questions
@@ -146,13 +146,13 @@ def run_morning_queries(
         if verbose:
             print(msg)
 
-    log(f"\n[STEP 3] Querying NotebookLM — notebook: '{notebook}'")
+    log(f"\n[STEP 3] Querying NotebookLM — {notebook} ({_NB})")
 
     # 0. Check auth before attempting any CLI calls
     if not _available():
         r = BridgeResult(ok=False, output="", error="notebooklm-py not installed. Run: pip install notebooklm-py")
         log(f"  ✗ {r.error}")
-        _print_manual_fallback(brief_path, notebook)
+        _print_manual_fallback(brief_path)
         return {"_setup": r}
 
     if not _authenticated():
@@ -161,16 +161,15 @@ def run_morning_queries(
             "  Then re-run this session to enable grounded research."
         ))
         log(f"  ✗ {r.error}")
-        _print_manual_fallback(brief_path, notebook)
+        _print_manual_fallback(brief_path)
         return {"_setup": r}
 
-    # 1. Activate notebook
-    r = use_notebook(notebook)
+    # 1. Activate notebook by ID
+    r = use_notebook()
     if not r.ok:
-        log(f"  ✗ Could not activate notebook '{notebook}': {r.error}")
-        log(f"  → Create the notebook first: notebooklm create '{notebook}'")
+        log(f"  ✗ Could not activate notebook {_NB}: {r.error}")
         log(f"  → Fallback: run these manually:")
-        _print_manual_fallback(brief_path, notebook)
+        _print_manual_fallback(brief_path)
         return {"_setup": r}
 
     log(f"  ✓ Notebook active: {notebook}")
@@ -178,28 +177,31 @@ def run_morning_queries(
     # 2. Add morning brief source
     if brief_path and brief_path.exists():
         log(f"  → Adding source: {brief_path.name}")
-        r = source_add(brief_path, notebook)
+        r = source_add(brief_path)
         if r.ok:
             log(f"  ✓ Source added")
+            # 3. Wait for grounding using source ID from JSON response
+            try:
+                import json as _json
+                source_id = _json.loads(r.output)["source"]["id"]
+                log(f"  → Waiting for source {source_id[:8]}... to process")
+                r = source_wait(source_id)
+                if r.ok:
+                    log(f"  ✓ Source grounded")
+                else:
+                    log(f"  ⚠ source wait failed (may still work): {r.error}")
+            except (KeyError, ValueError, Exception) as e:
+                log(f"  ⚠ Could not parse source ID — skipping wait: {e}")
         else:
             log(f"  ⚠ Source add failed (continuing): {r.error}")
-
-        # 3. Wait for grounding
-        log(f"  → Waiting for source processing...")
-        r = source_wait(notebook)
-        if r.ok:
-            log(f"  ✓ Sources grounded")
-        else:
-            log(f"  ⚠ source wait failed (may still work): {r.error}")
 
     # 4. Ask all morning questions
     log(f"\n  [NotebookLM Responses]")
     for q in MORNING_QUESTIONS:
         log(f"\n  Q: {q}")
-        r = ask(q, notebook)
+        r = ask(q)
         results[q] = r
         if r.ok:
-            # Indent answer for clean terminal output
             for line in r.output.split("\n"):
                 log(f"     {line}")
         else:
@@ -224,7 +226,7 @@ def save_session_note(
     if verbose:
         print(f"\n  → Saving session note: '{title}'")
 
-    r = note_create(title, summary, notebook)
+    r = note_create(title, summary)
     if verbose:
         if r.ok:
             print(f"  ✓ Session note saved to '{notebook}'")
@@ -235,22 +237,19 @@ def save_session_note(
 
 # ── Fallback — print manual commands ─────────────────────────────────────────
 
-def _print_manual_fallback(
-    brief_path: Optional[Path],
-    notebook: str = NOTEBOOK,
-) -> None:
+def _print_manual_fallback(brief_path: Optional[Path] = None) -> None:
     """Print CLI commands for the user to run manually (METHOD B from CLAUDE.md)."""
     from datetime import datetime, timezone
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     print(f"\n  ── Manual fallback (METHOD B) ──────────────────────")
-    print(f"  notebooklm use '{notebook}'")
+    print(f"  notebooklm use {_NB}")
     if brief_path:
-        print(f"  notebooklm source add {brief_path}")
-        print(f"  notebooklm source wait")
+        print(f"  notebooklm source add {brief_path} -n {_NB}")
+        print(f"  notebooklm source wait -n {_NB}")
     for q in MORNING_QUESTIONS:
-        print(f"  notebooklm ask '{q}'")
-    print(f"  notebooklm note create 'Session {today}' '<paste summary here>'")
+        print(f"  notebooklm ask '{q}' -n {_NB}")
+    print(f"  notebooklm note create '<paste summary here>' -t 'Session {today}' -n {_NB}")
     print(f"  ────────────────────────────────────────────────────\n")
 
 
@@ -266,11 +265,11 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"notebooklm-py detected at: {shutil.which(_CLI)}")
-    print(f"Active notebook: {NOTEBOOK}")
+    print(f"Active notebook: {NOTEBOOK} ({_NB})")
     print()
 
-    # Quick connectivity test
-    r = ask("What is the main purpose of this notebook?", NOTEBOOK)
+    # Quick connectivity test (use ID, not name)
+    r = ask("What is the main purpose of this notebook?")
     if r.ok:
         print("Connection OK:")
         print(r.output[:500])

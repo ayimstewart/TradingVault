@@ -19,9 +19,9 @@ git submodule update --remote --quiet 2>/dev/null && \
   echo "      ✓ AI-Trader, Kronos, notebooklm-py, llmwiki updated" || \
   echo "      ⚠ Submodule update failed (offline?)"
 
-# 3. Run the morning brief
-echo "[3/4] Running morning brief..."
-cd agent && python3 run_session.py
+# 3. Run the full pipeline (all steps: research → checklist → orders → publish)
+echo "[3/4] Running full pipeline..."
+cd agent && python3 full_pipeline.py
 cd ..
 
 # 4. Show build queue status
