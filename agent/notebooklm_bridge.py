@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Optional
 
 
-NOTEBOOK = os.environ.get("NOTEBOOKLM_NOTEBOOK", "Master Brain")
-_CLI     = "notebooklm"
+NOTEBOOK    = os.environ.get("NOTEBOOKLM_NOTEBOOK", "Green Bread Coach(GBC)")
+NOTEBOOK_ID = os.environ.get("NOTEBOOKLM_NOTEBOOK_ID", "57880976-bb78-4efc-9272-de4b83b25358")
+_CLI        = "notebooklm"
 
 
 @dataclass
@@ -89,9 +90,16 @@ def use_notebook(notebook: str = NOTEBOOK) -> BridgeResult:
     return _run("use", notebook)
 
 
-def source_add(path: Path, notebook: str = NOTEBOOK) -> BridgeResult:
+def source_add(
+    path: Path,
+    notebook: str = NOTEBOOK,
+    notebook_id: str = NOTEBOOK_ID,
+) -> BridgeResult:
     """Add a local file as a source in the notebook."""
-    return _run("source", "add", str(path), "--notebook", notebook)
+    args = ["source", "add", str(path), "--notebook", notebook]
+    if notebook_id:
+        args += ["--notebook-id", notebook_id]
+    return _run(*args)
 
 
 def source_wait(notebook: str = NOTEBOOK) -> BridgeResult:
