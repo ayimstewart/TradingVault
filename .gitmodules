@@ -19,3 +19,9 @@
 [submodule "references/turbovec"]
 	path = references/turbovec
 	url = https://github.com/RyanCodrai/turbovec.git
+[submodule "references/claude-mem"]
+	path = references/claude-mem
+	url = https://github.com/thedotmack/claude-mem.git
+[submodule "references/agent-reach"]
+	path = references/agent-reach
+	url = https://github.com/Panniantong/Agent-Reach.git
