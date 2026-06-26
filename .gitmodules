@@ -28,3 +28,9 @@
 [submodule "references/jcode"]
 	path = references/jcode
 	url = https://github.com/1jehuang/jcode.git
+[submodule "references/async-rithmic"]
+	path = references/async-rithmic
+	url = https://github.com/rundef/async_rithmic.git
+[submodule "references/pyrithmic"]
+	path = references/pyrithmic
+	url = https://github.com/jacksonwoody/pyrithmic.git
