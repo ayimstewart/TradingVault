@@ -98,7 +98,7 @@ def register(password: str) -> dict:
 def login(password: str) -> dict:
     """Login to existing account and refresh stored token."""
     resp = requests.post(f"{BASE_URL}/claw/agents/login", json={
-        "email":    AGENT_EMAIL,
+        "name":     AGENT_NAME,
         "password": password,
     }, timeout=30)
     resp.raise_for_status()
@@ -227,7 +227,7 @@ def get_feed(limit: int = 10, symbol: Optional[str] = None) -> list[dict]:
     """Fetch the community signal feed."""
     params: dict = {"limit": limit, "sort": "new"}
     if symbol:
-        params["symbol"] = symbol
+        params["keyword"] = symbol
     resp = requests.get(f"{BASE_URL}/signals/feed", params=params, timeout=15)
     resp.raise_for_status()
     return resp.json().get("signals", [])
