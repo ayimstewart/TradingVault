@@ -189,8 +189,8 @@ def publish_brief(brief_text: str, symbols: list[str]) -> Optional[dict]:
                 "market":  "crypto",
                 "title":   f"Morning Brief — {today}",
                 "content": brief_text[:4000],
-                "symbols": symbols,
-                "tags":    ["morning-brief", "cockpit-checklist", "ema-fan"],
+                "symbols": ",".join(symbols) if isinstance(symbols, list) else (symbols or ""),
+                "tags":    "morning-brief,cockpit-checklist,ema-fan",
             },
             timeout=30,
         )
