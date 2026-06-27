@@ -88,9 +88,9 @@ def step_2_notebooklm(digest_path: Path | None) -> dict:
 # ── Step 3: data_fetcher ───────────────────────────────────────────────────────
 
 def step_3_fetch_data() -> dict:
-    _banner(3, "OHLCV — Kraken (1W)")
-    from data_fetcher import fetch_all_assets
-    data = fetch_all_assets(timeframe="1w")
+    _banner(3, "OHLCV — Kraken (1W + 1D + 1H AMS)")
+    from data_fetcher import fetch_market_structure
+    data = fetch_market_structure()
     print(f"  ✓ Fetched {len(data)} assets: {', '.join(data.keys())}")
     return data
 
@@ -98,12 +98,16 @@ def step_3_fetch_data() -> dict:
 # ── Step 4: signal_checker ────────────────────────────────────────────────────
 
 def step_4_checklist(weekly_data: dict, capital_pct: float) -> list:
-    _banner(4, "Cockpit Checklist (rules.md §1–4)")
+    _banner(4, "Cockpit Checklist (rules.md §1–4 + §8 AMS)")
     from signal_checker import run_full_checklist
     from harmonic_detector import scan_watch_list
     results = run_full_checklist(weekly_data, timeframe="1w", capital_pct=capital_pct)
     print("\n  Running harmonic scan...")
-    scan_watch_list(weekly_data, timeframe="1w")
+    weekly_dfs = {
+        t: (v["df"] if isinstance(v, dict) else v)
+        for t, v in weekly_data.items()
+    }
+    scan_watch_list(weekly_dfs, timeframe="1w")
     return results
 
 
@@ -273,7 +277,16 @@ def step_9_log_and_brief(
 
     append_to_decisions_log(signal_results, vault_root=VAULT_ROOT)
 
-    brief_data = {ticker: {"df": df} for ticker, df in weekly_data.items()}
+    brief_data = {
+        ticker: {
+            "df":             info["df"] if isinstance(info, dict) else info,
+            "prev_day_color": info.get("prev_day_color", "—") if isinstance(info, dict) else "—",
+            "daily_open":     info.get("daily_open", 0.0) if isinstance(info, dict) else 0.0,
+            "h1_status":      info.get("h1_status", "—") if isinstance(info, dict) else "—",
+            "combined_bias":  info.get("combined_bias", "—") if isinstance(info, dict) else "—",
+        }
+        for ticker, info in weekly_data.items()
+    }
     brief_path = save_morning_brief(brief_data)
     print(f"  ✓ Morning Brief: {brief_path.name}")
 
