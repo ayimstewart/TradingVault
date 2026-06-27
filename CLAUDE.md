@@ -38,14 +38,14 @@ Do not wait to be asked. Do not skip any. This is your knowledge base.
 
 ### Reference Repos — source code (not just READMEs)
 ```
-@references/async-rithmic/rithmic/                 ← async Rithmic Protocol Buffer API
+@references/async-rithmic/async_rithmic/           ← async Rithmic Protocol Buffer API
 @references/ruflo/plugins/ruflo-neural-trader/     ← regime detection + anomaly scoring
 @references/ruflo/plugins/ruflo-market-data/       ← OHLCV normalization + pattern library
 @references/AI-Trader/skills/                      ← ai4trade.ai skill definitions
 @references/notebooklm-py/src/                     ← NotebookLM Python client source
-@references/Kronos/quantmind/                      ← Kronos candlestick foundation model
+@references/Kronos/model/                          ← Kronos candlestick foundation model
 @references/quant-mind/quantmind/                  ← quant research pipeline
-@references/turbovec/src/                          ← turbovec vector index source
+@references/turbovec/turbovec-python/python/       ← turbovec Python bindings
 ```
 
 **After reading all files above, confirm with:**
