@@ -43,7 +43,7 @@ VAULT_ROOT = Path(__file__).parent.parent
 
 # ── Kronos model config ───────────────────────────────────────────────────────
 
-KRONOS_TOKENIZER = "NeoQuasar/Kronos-Tokenizer-base"
+KRONOS_TOKENIZER = "NeoQuasar/Kronos-Tokenizer-2k"
 KRONOS_MODEL     = "NeoQuasar/Kronos-mini"  # 4.1M params — fastest, 2048 context
 PRED_LEN         = 4     # predict 4 candles forward (1 week = 4 x 4H)
 LOOKBACK         = 200   # candles of context
@@ -114,20 +114,20 @@ def _kronos_probability(df: pd.DataFrame, pred_len: int = PRED_LEN) -> tuple[flo
 
         cols    = ["open", "high", "low", "close", "volume"]
         x_df    = df[cols].iloc[-LOOKBACK:].copy()
-        x_ts    = x_df.index.to_series()
+        x_ts    = pd.to_datetime(df.index[-LOOKBACK:])
 
         # Build future timestamps (same interval as last two candles)
-        last_interval = x_ts.iloc[-1] - x_ts.iloc[-2]
+        last_interval = x_ts[-1] - x_ts[-2]
         y_ts = pd.date_range(
-            start=x_ts.iloc[-1] + last_interval,
+            start=x_ts[-1] + last_interval,
             periods=pred_len,
             freq=last_interval,
         )
 
         pred_df = predictor.predict(
             df=x_df.reset_index(drop=True),
-            x_timestamp=pd.Series(range(len(x_df))),
-            y_timestamp=pd.Series(range(len(x_df), len(x_df) + pred_len)),
+            x_timestamp=pd.Series(x_ts),
+            y_timestamp=pd.Series(y_ts),
             pred_len=pred_len,
             T=0.8,
             top_p=0.9,
