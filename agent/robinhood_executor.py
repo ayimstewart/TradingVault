@@ -4,6 +4,9 @@ robinhood_executor.py — Prepare and log Robinhood equity orders.
 Translates a validated TradeCard (from position_sizer.py) into a
 structured order payload, validates it, and logs it to decisions-log.md.
 
+STOCKS ONLY for semi-auto staging — Human confirms before execution.
+Crypto auto-execute is flagged pending until MCP execution tools are wired.
+
 Actual order placement uses the Robinhood MCP tools (mcp__robinhood-trading__*)
 available inside Claude Code. This script outputs the exact parameters to pass.
 
@@ -44,12 +47,10 @@ def build_equity_order(
     """
     Build a Robinhood-compatible equity order payload.
 
-    For crypto/spot: direction=="LONG" → buy order, direction=="SHORT" → sell order.
-    Stop-loss bracket is a separate order placed after fill confirmation.
+    MCP schema (review_equity_order / place_equity_order):
+      symbol, side, amount, quantity, order_type, limit_price, time_in_force
 
-    Returns a dict with two keys:
-      "entry_order" — the main order parameters
-      "stop_order"  — stop-loss parameters (place after fill)
+    Stop-loss is a SEPARATE order after fill — not in MCP bracket schema.
     """
     side = "buy" if direction == "LONG" else "sell"
     stop_side = "sell" if direction == "LONG" else "buy"
@@ -59,30 +60,36 @@ def build_equity_order(
         "side": side,
         "order_type": order_type,
         "quantity": round(quantity, 6),
-        "price": round(entry_price, 6),
+        "limit_price": round(entry_price, 6),
         "time_in_force": time_in_force,
     }
     if account_number:
         entry_order["account_number"] = account_number
 
+    # Staged separately — place after entry fill confirmed (human or future MCP)
     stop_order = {
         "symbol": ticker,
         "side": stop_side,
         "order_type": "stop",
         "quantity": round(quantity, 6),
-        "stop_price": round(stop_loss, 6),
+        "stop_loss_price": round(stop_loss, 6),
         "time_in_force": "gtc",
+        "note": "Separate order — not part of place_equity_order MCP params",
     }
     if account_number:
         stop_order["account_number"] = account_number
 
-    return {"entry_order": entry_order, "stop_order": stop_order}
+    return {
+        "entry_order": entry_order,
+        "stop_order":  stop_order,
+        "target_1r":   target_1r,
+    }
 
 
 def format_mcp_call(order: dict) -> str:
     """
     Print the exact Claude Code MCP tool invocation to execute this order.
-    The user (or Claude Code) pastes this to confirm and route via Robinhood MCP.
+    Human confirms before execution (stocks semi-auto).
     """
     entry = order["entry_order"]
     stop  = order["stop_order"]
@@ -90,17 +97,18 @@ def format_mcp_call(order: dict) -> str:
     lines = [
         "\n" + "═" * 60,
         "  ROBINHOOD EXECUTOR — MCP CALL PARAMETERS",
+        "  Human confirms before execution.",
         "═" * 60,
         "",
         "  Step 1 — Review entry order (run first):",
         "  ─────────────────────────────────────────",
-        f"  Tool: mcp__robinhood-trading__review_equity_order",
-        f"  Parameters:",
+        "  Tool: mcp__robinhood-trading__review_equity_order",
+        "  Parameters:",
         f"    symbol:        {entry['symbol']}",
         f"    side:          {entry['side']}",
         f"    order_type:    {entry['order_type']}",
         f"    quantity:      {entry['quantity']}",
-        f"    price:         {entry['price']}",
+        f"    limit_price:   {entry['limit_price']}",
         f"    time_in_force: {entry['time_in_force']}",
     ]
     if "account_number" in entry:
@@ -108,20 +116,18 @@ def format_mcp_call(order: dict) -> str:
 
     lines += [
         "",
-        "  Step 2 — Place entry order (after review confirms):",
-        "  ─────────────────────────────────────────────────",
-        f"  Tool: mcp__robinhood-trading__place_equity_order",
-        "  (same parameters as review above)",
+        "  Step 2 — Place entry order (after human confirms review):",
+        "  ─────────────────────────────────────────────────────────",
+        "  Tool: mcp__robinhood-trading__place_equity_order",
+        "  (same parameters as review above — limit_price, not price)",
         "",
-        "  Step 3 — Place stop-loss AFTER fill confirmed:",
-        "  ─────────────────────────────────────────────────",
-        f"  Tool: mcp__robinhood-trading__place_equity_order",
-        f"    symbol:        {stop['symbol']}",
-        f"    side:          {stop['side']}",
-        f"    order_type:    {stop['order_type']}",
-        f"    quantity:      {stop['quantity']}",
-        f"    stop_price:    {stop['stop_price']}",
-        f"    time_in_force: {stop['time_in_force']}",
+        "  Step 3 — Stop-loss AFTER fill (separate order; not in MCP bracket):",
+        "  ─────────────────────────────────────────────────────────────────",
+        f"    symbol:           {stop['symbol']}",
+        f"    side:             {stop['side']}",
+        f"    quantity:         {stop['quantity']}",
+        f"    stop_loss_price:  {stop['stop_loss_price']}  (place via app or future MCP)",
+        f"    time_in_force:    {stop['time_in_force']}",
         "",
         "  ⚠  STOP MUST BE PLACED — rules.md §4: no stop = no signal",
         "═" * 60,
@@ -138,15 +144,45 @@ def log_pending_order(order: dict, note: str = "") -> None:
     row = (
         f"\n| {now} | ORDER STAGED | {entry_o['symbol']} | "
         f"{entry_o['side'].upper()} | qty={entry_o['quantity']} | "
-        f"entry={entry_o['price']} | stop={stop_o['stop_price']} | "
-        f"MCP order pending confirmation. {note} |\n"
+        f"entry={entry_o['limit_price']} | stop={stop_o['stop_loss_price']} | "
+        f"{note} |\n"
     )
     try:
         with open(DECISIONS_LOG, "a") as f:
             f.write(row)
-        print(f"  ✓ Logged to decisions-log.md")
+        print("  ✓ Logged to decisions-log.md")
     except OSError as e:
         print(f"  ⚠ Log write failed: {e}")
+
+
+def stage_for_review(order: dict, note: str = "") -> dict:
+    """
+    STOCKS ONLY — semi-auto: print MCP params and log for human confirmation.
+    Human confirms before execution.
+    """
+    print(format_mcp_call(order))
+    log_pending_order(
+        order,
+        note=note or "STAGED — Human confirms before execution.",
+    )
+    return {"status": "staged_for_review", "order": order}
+
+
+def auto_execute(order: dict, note: str = "") -> dict:
+    """
+    Crypto full-auto path — pending until MCP execution tools are available.
+    Does not submit unattended; logs as pending auto-execute.
+    """
+    print(format_mcp_call(order))
+    print(
+        "  CRYPTO AUTO-EXECUTE: PENDING — MCP place_equity_order not wired "
+        "for unattended submit yet."
+    )
+    log_pending_order(
+        order,
+        note=note or "PENDING auto-execute — awaiting MCP execution tools.",
+    )
+    return {"status": "pending_auto", "order": order}
 
 
 # ── Validation gate ───────────────────────────────────────────────────────────
@@ -174,6 +210,18 @@ def validate_trade_card(card: dict) -> list[str]:
     return errors
 
 
+def order_from_signal(sig, quantity: float) -> dict:
+    """Build order dict from a SignalResult + sized quantity."""
+    return build_equity_order(
+        ticker=sig.ticker,
+        direction=sig.signal_type.value,
+        entry_price=sig.entry_price,
+        stop_loss=sig.stop_loss,
+        target_1r=sig.target_1r,
+        quantity=quantity,
+    )
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -192,7 +240,6 @@ def main() -> None:
                         help="Print order parameters without logging")
     args = parser.parse_args()
 
-    # ── Build card dict from args or --json ───────────────────────────────────
     if args.json_card:
         try:
             card = json.loads(args.json_card)
@@ -209,19 +256,17 @@ def main() -> None:
             "position_units": args.quantity,
         }
     else:
-        # Demo mode — show what a LINK order would look like at the alert level
         print("\n[robinhood_executor] Demo mode — no args provided.\n")
         card = {
             "ticker": "LINK",
             "direction": "LONG",
             "entry_price": 8.4746,
-            "stop_loss": 8.4746 - 0.9743,   # ATR(7) from today's brief
+            "stop_loss": 8.4746 - 0.9743,
             "target_1r": 8.4746 + 0.9743,
-            "position_units": 10.27,         # example sizing at $100 risk
+            "position_units": 10.27,
         }
         print("  Using LINK Gartley D-point example (alert at $8.4746):")
 
-    # ── Validate ──────────────────────────────────────────────────────────────
     errors = validate_trade_card(card)
     if errors:
         print("\n[BLOCKED] Trade card failed validation:")
@@ -229,7 +274,6 @@ def main() -> None:
             print(f"  ✗ {err}")
         sys.exit(1)
 
-    # ── Build order ───────────────────────────────────────────────────────────
     order = build_equity_order(
         ticker=card["ticker"],
         direction=card["direction"],
@@ -240,12 +284,12 @@ def main() -> None:
         account_number=args.account,
     )
 
-    print(format_mcp_call(order))
-
-    if not args.dry_run:
-        log_pending_order(order, note="Pending MCP confirmation.")
-    else:
+    if args.dry_run:
+        print(format_mcp_call(order))
         print("  [dry-run] Order not logged.")
+        return
+
+    stage_for_review(order)
 
 
 if __name__ == "__main__":
