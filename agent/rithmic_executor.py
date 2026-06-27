@@ -281,22 +281,16 @@ def log_block(ticker: str, reason: str) -> None:
 # ── Balance sync ──────────────────────────────────────────────────────────────
 
 def _extract_balance(pnl_data: Any) -> Optional[float]:
-    """Best-effort parse of Rithmic PNL protobuf/dict."""
+    """Parse AccountPnLPositionUpdate from list_account_summary() (async_rithmic)."""
     if pnl_data is None:
         return None
     if isinstance(pnl_data, dict):
-        for key in (
-            "account_balance", "AccountBalance", "balance",
-            "net_liquidating_value", "NetLiquidatingValue",
-        ):
-            if key in pnl_data and pnl_data[key] is not None:
+        for key in ("account_balance", "margin_balance", "mtm_account", "cash_on_hand"):
+            if key in pnl_data and pnl_data[key] not in (None, ""):
                 return float(pnl_data[key])
-    for attr in (
-        "account_balance", "AccountBalance", "balance",
-        "net_liquidating_value", "NetLiquidatingValue",
-    ):
+    for attr in ("account_balance", "margin_balance", "mtm_account", "cash_on_hand"):
         val = getattr(pnl_data, attr, None)
-        if val is not None:
+        if val not in (None, ""):
             try:
                 return float(val)
             except (TypeError, ValueError):
@@ -358,7 +352,14 @@ async def sync_balance_from_rithmic(config: RithmicConfig) -> Optional[float]:
 # ── Rithmic client ────────────────────────────────────────────────────────────
 
 def _build_client(config: RithmicConfig):
-    """Instantiate async_rithmic RithmicClient from config."""
+    """Instantiate async_rithmic RithmicClient from config.
+
+    API (references/async-rithmic/async_rithmic/client.py):
+      RithmicClient(user, password, system_name, app_name, app_version, url, ...)
+      client.connect(**kwargs)
+      client.submit_order(order_id, symbol, exchange, qty=..., ...)
+      client.list_account_summary(account_id=...)
+    """
     try:
         from async_rithmic import RithmicClient
     except ImportError as exc:
@@ -366,23 +367,24 @@ def _build_client(config: RithmicConfig):
             "async_rithmic not installed. Run: pip install async_rithmic"
         ) from exc
 
-    kwargs: dict[str, Any] = {
-        "user":         config.user,
-        "password":     config.password,
-        "system_name":  config.system_name,
-        "app_name":     config.app_name,
-        "app_version":  config.app_version,
-    }
-    if config.url:
-        kwargs["url"] = config.url
-    elif config.gateway:
-        try:
-            from async_rithmic import Gateway
-            kwargs["gateway"] = getattr(Gateway, config.gateway.upper(), config.gateway)
-        except ImportError:
-            kwargs["gateway"] = config.gateway
+    url = config.url.strip()
+    if not url and config.gateway.strip():
+        gw = config.gateway.strip()
+        url = gw if "://" in gw else f"wss://{gw}"
+    if not url:
+        raise ValueError(
+            "Rithmic config requires 'url' (wss://host:port). "
+            f"Set url in {CONFIG_FILE}"
+        )
 
-    return RithmicClient(**kwargs)
+    return RithmicClient(
+        user         = config.user,
+        password     = config.password,
+        system_name  = config.system_name,
+        app_name     = config.app_name,
+        app_version  = config.app_version,
+        url          = url,
+    )
 
 
 def _submit_via_pyrithmic(spec: RithmicOrderSpec) -> bool:
@@ -468,25 +470,18 @@ async def _submit_bracket(client, config: RithmicConfig, spec: RithmicOrderSpec)
     security_code = await _resolve_security_code(client, spec)
     txn = TransactionType.BUY if spec.direction == "LONG" else TransactionType.SELL
 
-    kwargs: dict[str, Any] = {
-        "qty":               spec.qty,
-        "order_type":        OrderType.LIMIT,
-        "transaction_type":  txn,
-        "stop_ticks":        spec.stop_ticks,
-        "target_ticks":      spec.target_ticks,
-        "stop_market_on_reject": True,
-    }
-    if config.account_id:
-        kwargs["account_id"] = config.account_id
-
-    # Limit entry at signal price
-    kwargs["price"] = spec.entry_price
-
     await client.submit_order(
-        spec.order_id,
-        security_code,
-        spec.exchange,
-        **kwargs,
+        order_id      = spec.order_id,
+        symbol        = security_code,
+        exchange      = spec.exchange,
+        qty           = spec.qty,
+        order_type    = OrderType.LIMIT,
+        transaction_type = txn,
+        price         = spec.entry_price,
+        stop_ticks    = spec.stop_ticks,
+        target_ticks  = spec.target_ticks,
+        stop_market_on_reject = True,
+        **({"account_id": config.account_id} if config.account_id else {}),
     )
     return {"order_id": spec.order_id, "security_code": security_code, "status": "submitted"}
 
@@ -540,7 +535,7 @@ async def execute_orders_async(
                     return
                 fill_price = float(getattr(notification, "fill_price", 0) or 0)
                 order_id   = str(getattr(notification, "user_tag", "") or "")
-                qty        = int(getattr(notification, "fill_quantity", 0) or 0)
+                qty        = int(getattr(notification, "fill_size", 0) or 0)
                 print(f"  ✓ FILL {order_id} @ {fill_price}  qty={qty}")
 
                 spec = pending.get(order_id)
