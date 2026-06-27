@@ -158,6 +158,7 @@ def classify_ema_trend(row: pd.Series) -> str:
 def check_body_rule(row: pd.Series, direction: str) -> bool:
     """
     Validate the 30% Body Rule from rules.md §2.
+    Both open AND close must be in the upper/lower 30% zone.
     direction: 'bullish' or 'bearish'
     """
     candle_range = row["high"] - row["low"]
@@ -165,10 +166,10 @@ def check_body_rule(row: pd.Series, direction: str) -> bool:
         return False
     if direction == "bullish":
         threshold = row["high"] - (candle_range * 0.30)
-        return row["close"] >= threshold
+        return row["open"] >= threshold and row["close"] >= threshold
     if direction == "bearish":
         threshold = row["low"] + (candle_range * 0.30)
-        return row["close"] <= threshold
+        return row["open"] <= threshold and row["close"] <= threshold
     return False
 
 

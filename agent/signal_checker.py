@@ -109,6 +109,12 @@ class SignalResult:
     h1_status:      str   = ""
     combined_bias:  str   = ""
 
+    # Non-blocking warnings (e.g. capital ORANGE — reduce sizing)
+    flags:          list[str] = field(default_factory=list)
+
+    # Execution routing: crypto | stocks | futures
+    market_type:    str   = "crypto"
+
     # Metadata
     timestamp:     str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -450,17 +456,13 @@ def check_signal(
     blocked.extend(ams_blocked)
     h1_status = pullback.get("status", "")
 
-    # ── Rule §2: 30% Body Rule ─────────────────────────────────────────────
-    candle_range = row["high"] - row["low"]
-    body_valid   = False
-
-    if candle_range > 0:
-        if signal_type == SignalType.LONG:
-            threshold  = row["high"] - (candle_range * 0.30)
-            body_valid = row["close"] >= threshold
-        elif signal_type == SignalType.SHORT:
-            threshold  = row["low"] + (candle_range * 0.30)
-            body_valid = row["close"] <= threshold
+    # ── Rule §2: 30% Body Rule (open AND close in zone) ───────────────────
+    from data_fetcher import check_body_rule
+    body_valid = False
+    if signal_type == SignalType.LONG:
+        body_valid = check_body_rule(row, "bullish")
+    elif signal_type == SignalType.SHORT:
+        body_valid = check_body_rule(row, "bearish")
 
     if not body_valid and signal_type != SignalType.NONE:
         blocked.append(BlockReason.BODY_RULE_FAILED.value)
@@ -479,10 +481,10 @@ def check_signal(
     if atr == 0:
         blocked.append(BlockReason.NO_STOP_LOSS.value)
 
-    # ── Capital safeguard (90-90-90) ───────────────────────────────────────
+    # ── Capital safeguard (90-90-90) — FLAG only below 80%, do not hard block ─
+    flags: list[str] = []
     if capital_pct < 80:
-        blocked.append(BlockReason.CAPITAL_THRESHOLD.value)
-        # Don't hard block — just flag. Human decides whether to size down.
+        flags.append(BlockReason.CAPITAL_THRESHOLD.value)
 
     # ── Build result ───────────────────────────────────────────────────────
     passed = len(blocked) == 0 and signal_type != SignalType.NONE
@@ -539,6 +541,7 @@ def check_signal(
         body_rule      = body_valid,
         atr_value      = atr,
         blocked_by     = [b for b in blocked],
+        flags          = flags,
         neural_context = neural_ctx,
         prev_day_bias  = prev_day_bias,
         prev_day_color = prev_day_color,
