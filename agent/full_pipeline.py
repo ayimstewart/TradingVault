@@ -37,6 +37,30 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 WATCH_LIST  = ["BTC", "ETH", "SOL", "XRP", "LINK", "PEPE"]
 
+# Execution routing — analysis watch list defaults to crypto (Robinhood)
+TICKER_MARKET_TYPE: dict[str, str] = {t: "crypto" for t in WATCH_LIST}
+
+
+def resolve_market_type(sig) -> str:
+    """Return crypto | stocks | futures for execution routing."""
+    return getattr(sig, "market_type", None) or TICKER_MARKET_TYPE.get(sig.ticker, "crypto")
+
+
+def split_signals_by_market(signal_results: list) -> tuple[list, list, list]:
+    """Split passed signals into (futures, crypto, stocks) execution lanes."""
+    futures, crypto, stocks = [], [], []
+    for sig in signal_results:
+        if not getattr(sig, "passed", False):
+            continue
+        mt = resolve_market_type(sig)
+        if mt == "futures":
+            futures.append(sig)
+        elif mt == "stocks":
+            stocks.append(sig)
+        else:
+            crypto.append(sig)
+    return futures, crypto, stocks
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -161,18 +185,21 @@ def step_5_pattern_db(signal_results: list) -> None:
 
 # ── Step 6: apex_guard ────────────────────────────────────────────────────────
 
-def step_6_apex_guard(signal_results: list) -> list:
+def step_6_apex_guard(futures_signals: list) -> list:
     """
-    Run Apex trailing drawdown check for each confirmed signal.
-    Returns only the signals that pass apex guard (safe to execute).
+    Run Apex trailing drawdown check for futures signals only.
+    Returns signals safe to submit via rithmic_executor.
     """
-    _banner(6, "Apex Guard — PA-50K Drawdown Protection")
+    _banner(6, "Apex Guard — PA-50K Drawdown Protection (futures)")
+
+    if not futures_signals:
+        print("  No futures signals — apex guard skipped")
+        return []
+
     from apex_guard import check_apex_guard
 
     apex_cleared: list = []
-    for sig in signal_results:
-        if not getattr(sig, "passed", False):
-            continue
+    for sig in futures_signals:
         guard = check_apex_guard(atr_7=sig.atr_value)
         print(guard.to_console())
         if guard.passed:
@@ -180,7 +207,7 @@ def step_6_apex_guard(signal_results: list) -> list:
         else:
             print(f"  ✗ {sig.ticker} BLOCKED by apex guard — signal dropped")
 
-    print(f"\n  Apex-cleared signals: {len(apex_cleared)}/{len([r for r in signal_results if r.passed])}")
+    print(f"\n  Apex-cleared futures: {len(apex_cleared)}/{len(futures_signals)}")
     return apex_cleared
 
 
@@ -208,50 +235,59 @@ def step_6b_rithmic(apex_cleared: list, live: bool = False) -> list[dict]:
 # ── Step 7: robinhood_executor ────────────────────────────────────────────────
 
 def step_7_robinhood(
-    apex_cleared: list,
+    crypto_signals: list,
+    stock_signals: list,
     account_balance: float | None,
 ) -> list[dict]:
     """
-    Build and stage Robinhood orders for apex-cleared signals.
-    Returns list of order dicts (logged to decisions-log.md).
+    Route Robinhood execution by market type:
+      stocks → stage_for_review (semi-auto, human confirms)
+      crypto → auto_execute (pending until MCP tools wired)
     """
-    _banner(7, "Robinhood Executor — Stage Orders")
+    _banner(7, "Robinhood Executor — Crypto + Stocks")
 
-    if not apex_cleared:
-        print("  No apex-cleared signals — Robinhood step skipped")
+    if not crypto_signals and not stock_signals:
+        print("  No crypto/stock signals — Robinhood step skipped")
         return []
 
     if account_balance is None:
         print("  Account balance not set (--account not provided)")
         print("  MCP call parameters printed for reference only (no sizing)\n")
 
-    from robinhood_executor import build_equity_order, format_mcp_call, log_pending_order
+    from robinhood_executor import (
+        auto_execute, order_from_signal, stage_for_review,
+    )
     from position_sizer import size_position
 
     orders: list[dict] = []
-    for sig in apex_cleared:
+
+    def _size_and_order(sig) -> dict | None:
         if sig.stop_loss <= 0:
             print(f"  ✗ {sig.ticker} skipped — no ATR(7) stop (rules.md §4)")
-            continue
-
+            return None
         if account_balance is not None:
-            card  = size_position(sig, account_balance=account_balance)
+            card = size_position(sig, account_balance=account_balance)
             units = card.position_units
             print(card.to_console())
         else:
             units = 1.0
+        return order_from_signal(sig, units)
 
-        order = build_equity_order(
-            ticker     = sig.ticker,
-            direction  = sig.signal_type.value,
-            entry_price= sig.entry_price,
-            stop_loss  = sig.stop_loss,
-            target_1r  = sig.target_1r,
-            quantity   = units,
-        )
-        print(format_mcp_call(order))
-        log_pending_order(order, note="Staged by full_pipeline.py")
-        orders.append(order)
+    if stock_signals:
+        print(f"\n  Stocks ({len(stock_signals)}) — semi-auto, human confirms:")
+        for sig in stock_signals:
+            order = _size_and_order(sig)
+            if order:
+                result = stage_for_review(order, note=f"Stock {sig.ticker} — human confirms")
+                orders.append(result)
+
+    if crypto_signals:
+        print(f"\n  Crypto ({len(crypto_signals)}) — auto-execute (pending MCP):")
+        for sig in crypto_signals:
+            order = _size_and_order(sig)
+            if order:
+                result = auto_execute(order, note=f"Crypto {sig.ticker} — pending auto")
+                orders.append(result)
 
     return orders
 
@@ -386,6 +422,11 @@ def main() -> None:
         help="Skip AI-Trader publish step",
     )
     parser.add_argument(
+        "--futures",
+        action="store_true",
+        help="Route watch-list signals as futures (Rithmic) instead of crypto",
+    )
+    parser.add_argument(
         "--rithmic-live", action="store_true",
         help="Submit Rithmic orders LIVE (default: dry-run staging only)",
     )
@@ -427,24 +468,33 @@ def main() -> None:
     # Step 4 — Checklist
     signal_results = step_4_checklist(weekly_data, capital_pct)
 
+    if args.futures:
+        for sig in signal_results:
+            if getattr(sig, "passed", False):
+                sig.market_type = "futures"
+
     # Step 5 — Pattern DB
     step_5_pattern_db(signal_results)
 
-    # Step 6 — Apex guard
-    apex_cleared = step_6_apex_guard(signal_results)
+    # Step 6 — Apex guard (futures only) + execution routing
+    futures_sigs, crypto_sigs, stock_sigs = split_signals_by_market(signal_results)
+    print(f"\n  Execution routing: {len(futures_sigs)} futures | "
+          f"{len(crypto_sigs)} crypto | {len(stock_sigs)} stocks")
 
-    # Step 6b — Rithmic CME micro-futures (dry-run unless --rithmic-live)
+    apex_cleared = step_6_apex_guard(futures_sigs)
+
+    # Step 6b — Rithmic full-auto (futures, apex-cleared)
     step_6b_rithmic(apex_cleared, live=args.rithmic_live)
 
-    # Step 7 — Robinhood orders
-    orders = step_7_robinhood(apex_cleared, args.account)
+    # Step 7 — Robinhood (crypto auto pending + stocks semi-auto)
+    orders = step_7_robinhood(crypto_sigs, stock_sigs, args.account)
 
-    # Step 8 — AI-Trader publish (apex-cleared only)
+    # Step 8 — AI-Trader publish (all checklist-passed signals)
     publish_result: dict = {}
     if not args.no_publish:
-        confirmed  = [r for r in signal_results if getattr(r, "passed", False)]
-        brief_text = _build_brief_text(confirmed, apex_cleared)
-        publish_result = step_8_publish(apex_cleared, brief_text)
+        passed     = [r for r in signal_results if getattr(r, "passed", False)]
+        brief_text = _build_brief_text(passed, apex_cleared)
+        publish_result = step_8_publish(passed, brief_text)
     else:
         _banner(8, "AI-Trader Publisher — skipped (--no-publish)")
 
