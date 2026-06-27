@@ -136,13 +136,23 @@ def publish_signal(signal, note: str = "") -> dict:
             "Only call after Cockpit Checklist passes (rules.md §1-4)."
         )
 
+    stop = float(getattr(signal, "stop_loss", 0.0) or 0.0)
+    if stop <= 0:
+        raise ValueError(
+            f"publish_signal blocked for {signal.ticker}: No ATR(7) stop (rules.md §4)."
+        )
+
+    entry = float(getattr(signal, "entry_price", 0.0) or 0.0)
+    if entry <= 0:
+        raise ValueError(f"publish_signal blocked for {signal.ticker}: No entry price.")
+
     direction = signal.signal_type.value   # "LONG" or "SHORT"
     action    = "buy" if direction == "LONG" else "short"
 
     content_parts = [
         f"{signal.ticker} {direction}",
-        f"Entry: {signal.entry_price:.6g}",
-        f"Stop (ATR7): {signal.stop_loss:.6g}",
+        f"Entry: {entry:.6g}",
+        f"Stop (ATR7): {stop:.6g}",
         f"Target 1R: {signal.target_1r:.6g}",
         f"EMA: {signal.ema_trend}",
         f"TF: {signal.timeframe.upper()}",
@@ -155,8 +165,8 @@ def publish_signal(signal, note: str = "") -> dict:
         "market":      "crypto",
         "action":      action,
         "symbol":      signal.ticker,
-        "price":       float(signal.entry_price),
-        "quantity":    1,        # symbolic unit — platform tracks PnL from this
+        "price":       entry,
+        "quantity":    1,
         "content":     content,
         "executed_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -184,8 +194,8 @@ def publish_morning_brief(brief_text: str, symbols: list[str]) -> dict:
             "market":  "crypto",
             "title":   f"Morning Brief — {today}",
             "content": brief_text,
-            "symbols": symbols,
-            "tags":    ["morning-brief", "cockpit-checklist", "ema-fan"],
+            "symbols": ",".join(symbols) if isinstance(symbols, list) else (symbols or ""),
+            "tags":    "morning-brief,cockpit-checklist,ema-fan",
         },
         timeout=30,
     )
@@ -200,9 +210,10 @@ def publish_session_summary(summary: str, valid_count: int) -> dict:
         f"{BASE_URL}/signals/discussion",
         headers=_headers(),
         json={
+            "market":  "crypto",
             "title":   f"Session Close — {today} ({valid_count} valid signals)",
             "content": summary,
-            "tags":    ["session-close", "cockpit-checklist"],
+            "tags":    "session-close,cockpit-checklist",
         },
         timeout=30,
     )
