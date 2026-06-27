@@ -23,6 +23,9 @@ class SignalType(Enum):
 
 
 class BlockReason(Enum):
+    AMS_BIAS_CONFLICT    = "Daily bias conflicts with 1W trend — wait (rules.md §8)"
+    AMS_DAILY_DIRECTION  = "Daily bias direction only — wrong side blocked (rules.md §8)"
+    AMS_NO_1H_PULLBACK   = "1H pullback not complete — wait for counter-trend sequence (rules.md §8)"
     EMA_NOT_FANNING      = "EMA not fanning — trend invalid (rules.md §1)"
     BODY_RULE_FAILED     = "Candle body not in valid zone (rules.md §2)"
     NO_STOP_LOSS         = "No ATR(7) stop calculated (rules.md §4)"
@@ -99,6 +102,13 @@ class SignalResult:
     # ruflo-neural-trader advisory context (never blocks signals)
     neural_context: Optional[NeuralContext] = field(default=None)
 
+    # Advanced Market Structure (rules.md §8)
+    prev_day_bias:  str   = ""
+    prev_day_color: str   = ""
+    daily_open:     float = 0.0
+    h1_status:      str   = ""
+    combined_bias:  str   = ""
+
     # Metadata
     timestamp:     str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -122,6 +132,14 @@ class SignalResult:
             f"  Signal:      {self.signal_type.value}",
             f"  Result:      {'✓ VALID — setup confirmed' if self.passed else '✗ BLOCKED'}",
         ]
+        if self.prev_day_bias or self.daily_open:
+            lines += [
+                f"  ── Advanced Market Structure (§8) ──",
+                f"  Prev Day:    {self.prev_day_color} → {self.prev_day_bias}",
+                f"  Daily Open:  {self.daily_open:.4g}" if self.daily_open else "  Daily Open:  —",
+                f"  1H Status:   {self.h1_status or '—'}",
+                f"  Bias:        {self.combined_bias or '—'}",
+            ]
         if self.passed:
             lines += [
                 f"{'─'*55}",
@@ -244,6 +262,139 @@ def check_circuit_breakers(
     return active
 
 
+# ── Advanced Market Structure (rules.md §8) ───────────────────────────────────
+
+def _is_green(row: pd.Series) -> bool:
+    return row["close"] >= row["open"]
+
+
+def _is_red(row: pd.Series) -> bool:
+    return row["close"] < row["open"]
+
+
+def detect_1h_pullback(df_1h: pd.DataFrame, daily_bias: str) -> dict:
+    """
+    1H pullback detector per rules.md §8.
+
+    BUY bias  → red sequence, then first green candle = entry ready
+    SELL bias → green sequence, then first red candle = entry ready
+    """
+    if df_1h is None or len(df_1h) < 2 or daily_bias not in ("BUY", "SELL"):
+        return {
+            "status":      "N/A",
+            "entry_ready": False,
+            "detail":      "Insufficient 1H data",
+        }
+
+    latest = df_1h.iloc[-1]
+    counter_is_red = daily_bias == "BUY"
+
+    if counter_is_red:
+        entry_ready = _is_green(latest)
+        if not entry_ready:
+            # In or building counter-trend (red) sequence
+            if _is_red(latest):
+                return {
+                    "status":      "IN-PULLBACK",
+                    "entry_ready": False,
+                    "detail":      "In red 1H sequence — wait for first green candle",
+                }
+            return {
+                "status":      "NO-SEQUENCE",
+                "entry_ready": False,
+                "detail":      "No red counter-trend sequence yet",
+            }
+        # Latest green — count preceding red candles
+        idx = len(df_1h) - 2
+        red_count = 0
+        while idx >= 0 and _is_red(df_1h.iloc[idx]):
+            red_count += 1
+            idx -= 1
+        if red_count >= 1:
+            return {
+                "status":      "ENTRY-READY",
+                "entry_ready": True,
+                "detail":      f"First green after {red_count} red 1H candle(s)",
+            }
+        return {
+            "status":      "NO-PULLBACK",
+            "entry_ready": False,
+            "detail":      "Green candle without prior red sequence",
+        }
+
+    # SELL bias — mirror logic
+    entry_ready = _is_red(latest)
+    if not entry_ready:
+        if _is_green(latest):
+            return {
+                "status":      "IN-PULLBACK",
+                "entry_ready": False,
+                "detail":      "In green 1H sequence — wait for first red candle",
+            }
+        return {
+            "status":      "NO-SEQUENCE",
+            "entry_ready": False,
+            "detail":      "No green counter-trend sequence yet",
+        }
+
+    idx = len(df_1h) - 2
+    green_count = 0
+    while idx >= 0 and _is_green(df_1h.iloc[idx]):
+        green_count += 1
+        idx -= 1
+    if green_count >= 1:
+        return {
+            "status":      "ENTRY-READY",
+            "entry_ready": True,
+            "detail":      f"First red after {green_count} green 1H candle(s)",
+        }
+    return {
+        "status":      "NO-PULLBACK",
+        "entry_ready": False,
+        "detail":      "Red candle without prior green sequence",
+    }
+
+
+def check_ams_gates(
+    ema_trend: str,
+    signal_type: SignalType,
+    prev_day_bias: str,
+    df_1h: pd.DataFrame | None = None,
+) -> tuple[list[str], dict, str]:
+    """
+    Step 0 — Advanced Market Structure gates (rules.md §8).
+    Returns (blocked_reasons, pullback_info, combined_bias).
+    """
+    blocked: list[str] = []
+    from data_fetcher import classify_ams_bias
+
+    combined_bias = classify_ams_bias(ema_trend, prev_day_bias)
+    pullback = detect_1h_pullback(df_1h, prev_day_bias) if prev_day_bias in ("BUY", "SELL") else {
+        "status": "N/A", "entry_ready": False, "detail": "No daily bias",
+    }
+
+    if prev_day_bias == "BUY" and signal_type == SignalType.SHORT:
+        blocked.append(BlockReason.AMS_DAILY_DIRECTION.value)
+    if prev_day_bias == "SELL" and signal_type == SignalType.LONG:
+        blocked.append(BlockReason.AMS_DAILY_DIRECTION.value)
+
+    if ema_trend == "FANNING-BULL" and prev_day_bias == "SELL":
+        blocked.append(BlockReason.AMS_BIAS_CONFLICT.value)
+    elif ema_trend == "FANNING-BEAR" and prev_day_bias == "BUY":
+        blocked.append(BlockReason.AMS_BIAS_CONFLICT.value)
+
+    if (
+        combined_bias in ("BUY-ALIGNED", "SELL-ALIGNED")
+        and signal_type != SignalType.NONE
+        and not pullback["entry_ready"]
+    ):
+        blocked.append(
+            f"{BlockReason.AMS_NO_1H_PULLBACK.value} ({pullback['status']}: {pullback['detail']})"
+        )
+
+    return blocked, pullback, combined_bias
+
+
 def check_signal(
     df: pd.DataFrame,
     ticker: str,
@@ -251,6 +402,11 @@ def check_signal(
     capital_pct: float = 100.0,
     daily_loss_pct: float = 0.0,
     weekly_loss_pct: float = 0.0,
+    *,
+    df_1h: pd.DataFrame | None = None,
+    prev_day_bias: str = "",
+    prev_day_color: str = "",
+    daily_open: float = 0.0,
 ) -> SignalResult:
     """
     Run the full Cockpit Checklist against the latest candle.
@@ -286,6 +442,13 @@ def check_signal(
         ema_trend   = "FLAT" if spread < 0.5 else "CONVERGING"
         signal_type = SignalType.NONE
         blocked.append(BlockReason.EMA_NOT_FANNING.value)
+
+    # ── Step 0: Advanced Market Structure (rules.md §8) ────────────────────
+    ams_blocked, pullback, combined_bias = check_ams_gates(
+        ema_trend, signal_type, prev_day_bias, df_1h,
+    )
+    blocked.extend(ams_blocked)
+    h1_status = pullback.get("status", "")
 
     # ── Rule §2: 30% Body Rule ─────────────────────────────────────────────
     candle_range = row["high"] - row["low"]
@@ -327,6 +490,10 @@ def check_signal(
     entry       = row["close"] if passed else 0.0
     stop_loss   = 0.0
     target_1r   = 0.0
+
+    # Prefer 1H entry close when AMS pullback triggered
+    if passed and df_1h is not None and len(df_1h) and pullback.get("entry_ready"):
+        entry = float(df_1h.iloc[-1]["close"])
 
     if passed and atr > 0:
         if signal_type == SignalType.LONG:
@@ -373,6 +540,11 @@ def check_signal(
         atr_value      = atr,
         blocked_by     = [b for b in blocked],
         neural_context = neural_ctx,
+        prev_day_bias  = prev_day_bias,
+        prev_day_color = prev_day_color,
+        daily_open     = daily_open,
+        h1_status      = h1_status,
+        combined_bias  = combined_bias,
     )
 
 
@@ -386,6 +558,9 @@ def run_full_checklist(
     """
     Run checklist on all watch list assets and return results.
     Prints a full console report including ruflo-neural-trader context.
+
+    all_data values may be DataFrames (legacy) or market-structure dicts
+    with keys: df, df_1h, prev_day_bias, prev_day_color, daily_open.
     """
     results   = []
     confirmed = []
@@ -393,12 +568,35 @@ def run_full_checklist(
 
     print(f"\n{'='*55}")
     print(f"  COCKPIT CHECKLIST — {timeframe.upper()} Timeframe")
+    print(f"  Advanced Market Structure §8 active")
     print(f"  Capital: {capital_pct:.1f}%  |  "
           f"{'⚠ ORANGE — reduce sizing' if capital_pct < 80 else 'OK'}")
     print(f"{'='*55}")
 
-    for ticker, df in all_data.items():
-        result = check_signal(df, ticker, timeframe, capital_pct, daily_loss_pct, weekly_loss_pct)
+    for ticker, item in all_data.items():
+        if isinstance(item, dict):
+            df            = item["df"]
+            df_1h         = item.get("df_1h")
+            prev_day_bias = item.get("prev_day_bias", "")
+            prev_day_color = item.get("prev_day_color", "")
+            daily_open    = item.get("daily_open", 0.0)
+        else:
+            df = item
+            df_1h = prev_day_bias = prev_day_color = None
+            daily_open = 0.0
+            prev_day_bias = prev_day_color = ""
+
+        result = check_signal(
+            df, ticker, timeframe, capital_pct, daily_loss_pct, weekly_loss_pct,
+            df_1h=df_1h,
+            prev_day_bias=prev_day_bias or "",
+            prev_day_color=prev_day_color or "",
+            daily_open=float(daily_open or 0.0),
+        )
+        if isinstance(item, dict):
+            item["h1_status"]     = result.h1_status
+            item["combined_bias"] = result.combined_bias
+
         results.append(result)
         print(result.to_console())
 
@@ -419,6 +617,7 @@ def run_full_checklist(
     print(f"{'─'*55}")
     print(f"  Rule: No signal without a confirmed stop-loss (rules.md §4)")
     print(f"  Rule: Weekly bias must be assessed before 4H (rules.md init §5)")
+    print(f"  Rule: AMS daily bias + 1H pullback required (rules.md §8)")
 
     return results
 
@@ -461,14 +660,13 @@ def append_to_decisions_log(
 
 
 if __name__ == "__main__":
-    # Demo: pull data and run checklist
-    from data_fetcher import fetch_all_assets
+    from data_fetcher import fetch_market_structure
 
-    print("Fetching weekly data...")
-    weekly_data = fetch_all_assets(timeframe="1w")
+    print("Fetching market structure (1W + 1D + 1H)...")
+    market_data = fetch_market_structure()
 
     results = run_full_checklist(
-        weekly_data,
+        market_data,
         timeframe="1w",
         capital_pct=100.0,
     )
