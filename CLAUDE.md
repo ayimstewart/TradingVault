@@ -10,31 +10,46 @@
 When this session starts, read ALL of the following files immediately.
 Do not wait to be asked. Do not skip any. This is your knowledge base.
 
-### Vault files (rules + memory)
+### Rules + Memory (non-negotiable — read first)
 ```
-@rules/rules.md                          ← Cockpit Checklist — non-negotiable
-@logs/decisions-log.md                   ← last 5 entries — behavioral state
-@logs/session-notes.md                   ← last Morning Brief
-```
-
-### Reference repos (source of truth for every tool)
-```
-@references/AI-Trader/README.md          ← agent-native trading platform
-@references/Kronos/README.md             ← candlestick foundation model
-@references/notebooklm-py/README.md      ← NotebookLM CLI + MCP
-@references/notebooklm-py/docs/mcp-guide.md  ← exact MCP tool names + workflows
-@references/llmwiki/README.md            ← autonomous self-maintaining wiki
+@rules/rules.md                                    ← Cockpit Checklist — non-negotiable
+@rules/apex_rules.md                               ← Apex trailing drawdown rules (PA-50K)
+@logs/decisions-log.md                             ← last 10 entries — behavioral state
+@logs/session-notes.md                             ← last Morning Brief
+@.cursorrules                                      ← build priority queue + auto-start rules
 ```
 
-### Agent scripts (what you can run and edit)
+### Own Agent Code — read ALL of these
 ```
-@agent/data_fetcher.py                   ← OHLCV fetcher (Kraken, no geo-block)
-@agent/signal_checker.py                 ← Cockpit Checklist enforcement layer
-@agent/run_session.py                    ← full morning brief loop
+@agent/data_fetcher.py                             ← OHLCV fetcher (Kraken, no geo-block)
+@agent/signal_checker.py                           ← Cockpit Checklist enforcement layer
+@agent/run_session.py                              ← full morning brief loop
+@agent/harmonic_detector.py                        ← Gartley / Butterfly pattern logic
+@agent/apex_guard.py                               ← Apex trailing drawdown protection
+@agent/rithmic_executor.py                         ← Mac-native Apex futures via async_rithmic
+@agent/robinhood_executor.py                       ← Robinhood MCP order staging
+@agent/ai_trader_publisher.py                      ← publish signals to ai4trade.ai
+@agent/full_pipeline.py                            ← master orchestrator (9-step pipeline)
+@agent/notebooklm_bridge.py                        ← NotebookLM CLI wrapper
+@agent/quant_mind_fetcher.py                       ← arXiv + web research digest
+@agent/pattern_db.py                               ← turbovec harmonic pattern vector DB
+@agent/backtester.py                               ← walk-forward backtest engine
+```
+
+### Reference Repos — source code (not just READMEs)
+```
+@references/async-rithmic/rithmic/                 ← async Rithmic Protocol Buffer API
+@references/ruflo/plugins/ruflo-neural-trader/     ← regime detection + anomaly scoring
+@references/ruflo/plugins/ruflo-market-data/       ← OHLCV normalization + pattern library
+@references/AI-Trader/skills/                      ← ai4trade.ai skill definitions
+@references/notebooklm-py/src/                     ← NotebookLM Python client source
+@references/Kronos/quantmind/                      ← Kronos candlestick foundation model
+@references/quant-mind/quantmind/                  ← quant research pipeline
+@references/turbovec/src/                          ← turbovec vector index source
 ```
 
 **After reading all files above, confirm with:**
-> "Vault loaded. Rules active. References read. Ready."
+> "Full context loaded — [X] agent files, [Y] reference sources, active. Ready."
 
 **Cursor AI assist:** Cursor's AI sidebar can help at any point.
 Use `Ctrl+L` to open it, reference any file with `@filename`.
