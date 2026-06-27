@@ -156,19 +156,25 @@ const handlers = {
     const dangerous = ['rm -rf /', 'format c:', 'del /s /q c:\\', ':(){:|:&};:'];
     for (const d of dangerous) {
       if (cmd.includes(d)) {
-        console.log(JSON.stringify({ decision: 'deny', reason: `Dangerous command: ${d}` }));
+        console.log(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: `Dangerous command: ${d}`,
+          },
+        }));
         return;
       }
     }
-    console.log(JSON.stringify({ decision: 'allow' }));
+    console.log(JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+    }));
   },
 
   'pre-edit': () => {
-    console.log(JSON.stringify({ decision: 'allow' }));
-  },
-
-  'pre-edit': () => {
-    console.log(JSON.stringify({ decision: 'allow' }));
+    console.log(JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+    }));
   },
 
   'post-edit': () => {
