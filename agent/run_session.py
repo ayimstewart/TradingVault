@@ -27,7 +27,7 @@ import sys
 # Add agent/ to path so imports work
 sys.path.insert(0, str(Path(__file__).parent))
 
-from data_fetcher        import fetch_all_assets, save_morning_brief
+from data_fetcher        import fetch_market_structure, save_morning_brief
 from signal_checker      import run_full_checklist, append_to_decisions_log
 from harmonic_detector   import scan_watch_list
 from entry_finder        import find_4h_entries
@@ -116,9 +116,9 @@ def step_2_load_behavioral_state() -> float:
 
 
 def step_3_fetch_data() -> dict:
-    """Step 3a: Fetch 1W OHLCV for all watch list assets."""
-    print("\n[STEP 3a] Fetching 1W data (weekly bias — assessed FIRST)...")
-    return fetch_all_assets(timeframe="1w")
+    """Step 3a: Fetch 1W + 1D + 1H market structure (AMS §8)."""
+    print("\n[STEP 3a] Fetching market structure (1W + 1D + 1H)...")
+    return fetch_market_structure()
 
 
 def step_4_run_checklist(
@@ -130,7 +130,11 @@ def step_4_run_checklist(
     results = run_full_checklist(weekly_data, timeframe="1w", capital_pct=capital_pct)
 
     print("\n[STEP 4b] Running Harmonic Scan (1W)...")
-    scan_watch_list(weekly_data, timeframe="1w")
+    weekly_dfs = {
+        t: (v["df"] if isinstance(v, dict) else v)
+        for t, v in weekly_data.items()
+    }
+    scan_watch_list(weekly_dfs, timeframe="1w")
 
     return results
 
@@ -144,6 +148,7 @@ def step_4c_find_entries(
     print("\n[STEP 4c] 4H Entry Finder (FANNING assets only)...")
     return find_4h_entries(
         weekly_results,
+        market_data=weekly_data,
         account_balance=account_balance,
         risk_pct=1.0,
         capital_pct=capital_pct,
@@ -154,7 +159,16 @@ def step_4c_find_entries(
 def step_5_save_brief(weekly_data: dict) -> Path:
     """Step 5: Save Morning Brief to sources/ for NotebookLM."""
     print("\n[STEP 5] Saving Morning Brief to sources/...")
-    brief_data = {ticker: {"df": df} for ticker, df in weekly_data.items()}
+    brief_data = {
+        ticker: {
+            "df":             info["df"] if isinstance(info, dict) else info,
+            "prev_day_color": info.get("prev_day_color", "—") if isinstance(info, dict) else "—",
+            "daily_open":     info.get("daily_open", 0.0) if isinstance(info, dict) else 0.0,
+            "h1_status":      info.get("h1_status", "—") if isinstance(info, dict) else "—",
+            "combined_bias":  info.get("combined_bias", "—") if isinstance(info, dict) else "—",
+        }
+        for ticker, info in weekly_data.items()
+    }
     return save_morning_brief(brief_data)
 
 
@@ -188,7 +202,7 @@ def step_7_notebooklm_query(brief_path: Path, signal_results: list) -> None:
     if valid_signals:
         signal_lines = "\n".join(
             f"- {getattr(r, 'ticker', '?')}: {getattr(r, 'signal_type', '?').value} "
-            f"| Stop: {getattr(r, 'stop_loss', '?')} | Target: {getattr(r, 'target', '?')}"
+            f"| Stop: {getattr(r, 'stop_loss', '?')} | Target: {getattr(r, 'target_1r', '?')}"
             for r in valid_signals
         )
         summary = f"Session {today} — {len(valid_signals)} valid signal(s):\n{signal_lines}"

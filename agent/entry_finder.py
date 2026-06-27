@@ -23,7 +23,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from data_fetcher   import fetch_all_assets, WATCH_LIST, fetch_ohlcv, add_ema, add_atr, get_exchange
+from data_fetcher   import fetch_market_structure, WATCH_LIST, fetch_ohlcv, add_ema, add_atr, get_exchange
 from signal_checker import SignalResult, SignalType, check_signal
 from position_sizer import TradeCard, size_position, print_trade_card
 
@@ -42,6 +42,7 @@ class EntryOpportunity:
 
 def find_4h_entries(
     weekly_results: list[SignalResult],
+    market_data: dict | None = None,
     account_balance: float | None = None,
     risk_pct: float = 1.0,
     capital_pct: float = 100.0,
@@ -53,6 +54,7 @@ def find_4h_entries(
 
     Args:
         weekly_results:   Output of run_full_checklist on 1W data
+        market_data:      Optional fetch_market_structure() dict (AMS §8 fields)
         account_balance:  If provided, populate TradeCard with position sizing
         risk_pct:         % account risked per trade (default 1%)
         capital_pct:      90-90-90 capital level (reduces risk when < 80%)
@@ -97,7 +99,23 @@ def find_4h_entries(
                 print(f"  {ticker}: 4H fetch failed — {e}")
             continue
 
-        signal_4h = check_signal(df_4h, ticker, timeframe="4h", capital_pct=capital_pct)
+        ms = (market_data or {}).get(ticker, {})
+        if isinstance(ms, dict):
+            df_1h          = ms.get("df_1h")
+            prev_day_bias  = ms.get("prev_day_bias") or weekly_sig.prev_day_bias
+            prev_day_color = ms.get("prev_day_color") or weekly_sig.prev_day_color
+            daily_open     = float(ms.get("daily_open") or weekly_sig.daily_open or 0)
+        else:
+            df_1h = prev_day_bias = prev_day_color = None
+            daily_open = 0.0
+
+        signal_4h = check_signal(
+            df_4h, ticker, timeframe="4h", capital_pct=capital_pct,
+            df_1h=df_1h,
+            prev_day_bias=prev_day_bias or "",
+            prev_day_color=prev_day_color or "",
+            daily_open=daily_open,
+        )
 
         trade_card = None
         if signal_4h.passed and account_balance:
@@ -175,12 +193,13 @@ if __name__ == "__main__":
 
     ACCOUNT = float(input("Account balance ($): ") if len(sys.argv) < 2 else sys.argv[1])
 
-    print("Fetching 1W data (weekly bias gate)...")
-    weekly_data    = fetch_all_assets(timeframe="1w")
-    weekly_results = run_full_checklist(weekly_data, timeframe="1w")
+    print("Fetching market structure (1W + 1D + 1H)...")
+    market_data    = fetch_market_structure()
+    weekly_results = run_full_checklist(market_data, timeframe="1w")
 
     entries = find_4h_entries(
         weekly_results,
+        market_data=market_data,
         account_balance=ACCOUNT,
         risk_pct=1.0,
     )
