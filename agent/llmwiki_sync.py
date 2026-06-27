@@ -81,7 +81,7 @@ def _post_file(file_path: Path) -> Optional[dict]:
         ).encode() + file_content + f"\r\n--{boundary}--\r\n".encode()
 
         req = urllib.request.Request(
-            f"{LLMWIKI_URL}/api/upload",
+            f"{LLMWIKI_URL}/v1/upload",
             data=body,
             method="POST",
         )
@@ -114,16 +114,8 @@ def _save_state(state: dict) -> None:
 
 def _llmwiki_running() -> bool:
     """Return True if LLMWiki API is reachable at localhost:8000."""
-    result = _get("/api/health")
+    result = _get("/health")
     return result is not None
-
-
-def _llmwiki_workspace() -> Optional[str]:
-    """Return the active workspace path from LLMWiki, if available."""
-    data = _get("/api/workspace")
-    if data:
-        return data.get("path")
-    return None
 
 
 # ── Core sync logic ───────────────────────────────────────────────────────────
@@ -254,10 +246,6 @@ def print_status() -> None:
             print(f"    · {f.name}")
         if len(new_src) > 5:
             print(f"    ... and {len(new_src)-5} more")
-
-    ws = _llmwiki_workspace()
-    if ws:
-        print(f"\n  Active workspace: {ws}")
 
     if not running:
         print(f"\n  Start LLMWiki:")
