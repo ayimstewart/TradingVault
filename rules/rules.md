@@ -91,3 +91,37 @@ The agent treats **capital preservation as the primary success metric**, not pro
 `BTC` · `ETH` · `SOL` · `XRP` · `LINK` · `PEPE`
 
 Weekly (1W) timeframe is assessed FIRST for every asset before any lower timeframe analysis.
+
+---
+
+## 8. Advanced Market Structure (AMS)
+
+> Stacks on top of §1–4. Does not replace the Cockpit Checklist.
+> Source: brother's Advanced Market Structure strategy.
+
+### Daily bias (previous completed day)
+
+| Previous day candle | Daily bias | Allowed direction |
+|---------------------|------------|-------------------|
+| **Green** (close ≥ open) | **BUY only** | Long setups only |
+| **Red** (close < open) | **SELL only** | Short setups only |
+
+**Agent instruction:** Mark **today's daily open** as the session anchor price.
+
+### 1W vs daily alignment
+
+| 1W trend | Prev day | Action |
+|----------|----------|--------|
+| FANNING-BULL | Green (BUY) | Confirmed buy bias — proceed to 1H |
+| FANNING-BEAR | Red (SELL) | Confirmed sell bias — proceed to 1H |
+| FANNING-BULL | Red (SELL) | **Bias conflict — WAIT** |
+| FANNING-BEAR | Green (BUY) | **Bias conflict — WAIT** |
+
+### 1H pullback (required before entry)
+
+Entry only after a counter-trend sequence on **1H**, then the first candle matching daily bias:
+
+- **Green daily bias (BUY):** wait for a sequence of **red** 1H candles, then **first green** 1H candle = entry trigger
+- **Red daily bias (SELL):** wait for a sequence of **green** 1H candles, then **first red** 1H candle = entry trigger
+
+**Agent instruction:** No entry until 1H pullback completes. Weekly EMA + body rule + ATR(7) still apply after AMS gates pass.
