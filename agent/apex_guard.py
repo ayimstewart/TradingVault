@@ -36,7 +36,7 @@ DANGER_ZONE_MULTIPLIER = 1.5   # block if within 1.5 × ATR(7) of floor
 DEFAULT_STATE = {
     "account_size": 50_000,
     "trailing_drawdown": 2_500,
-    "daily_loss_limit": 2_500,
+    "daily_loss_limit": 1_000,
     "peak_eod_balance": 50_000,
     "current_balance": 50_000,
     "today_pnl": 0.0,
