@@ -35,12 +35,18 @@ class BlockReason(Enum):
 # ── ruflo-neural-trader: Market Regime ────────────────────────────────────────
 
 class MarketRegime(Enum):
-    BULL_TRENDING   = "Bull Trending"
-    BEAR_TRENDING   = "Bear Trending"
-    RANGING         = "Ranging"
-    HIGH_VOLATILITY = "High Volatility"
-    TRANSITIONING   = "Transitioning"
-    UNKNOWN         = "Unknown"
+    """Matches ruflo-neural-trader RegimeVerdict.regime (pipeline-messages.ts)."""
+    BULL_TRENDING   = "bull-trending"
+    BEAR_TRENDING   = "bear-trending"
+    RANGING         = "ranging"
+    HIGH_VOLATILITY = "high-volatility"
+    LOW_VOLATILITY  = "low-volatility"
+    TRANSITIONING   = "transitioning"
+    UNKNOWN         = "unknown"
+
+    @property
+    def display(self) -> str:
+        return self.value.replace("-", " ").title()
 
 
 @dataclass
@@ -51,14 +57,14 @@ class NeuralContext:
     """
     regime:           MarketRegime = MarketRegime.UNKNOWN
     anomaly_score:    float        = 0.0     # 0.0–1.0; >0.5 = significant
-    anomaly_type:     str          = ""      # spike | drift | flatline | oscillation | cluster-outlier
+    anomaly_type:     str          = ""      # spike | drift | flatline | oscillation | pattern-break | cluster-outlier
     circuit_breakers: list         = field(default_factory=list)
     patterns:         list         = field(default_factory=list)
     regime_note:      str          = ""
 
     def to_console(self) -> str:
         lines = [f"  ── Neural Context (advisory — ruflo-neural-trader) ──"]
-        lines.append(f"  Regime:      {self.regime.value}  {self.regime_note}")
+        lines.append(f"  Regime:      {self.regime.display} ({self.regime.value})  {self.regime_note}")
         if self.anomaly_score > 0.1:
             lines.append(f"  Anomaly:     {self.anomaly_score:.2f}  [{self.anomaly_type}]")
         if self.patterns:
@@ -139,8 +145,9 @@ class SignalResult:
 
 def assess_regime(df: pd.DataFrame, row: pd.Series) -> tuple:
     """
-    ruflo-neural-trader regime detection.
-    Derives from EMA fan spread + ATR expansion as ADX/SMA200 proxy.
+    Local regime classifier aligned with ruflo-neural-trader RegimeVerdict schema.
+    Plugin uses npx neural-trader --regime-detect; this Python layer mirrors the
+    six regime slugs from pipeline-messages.ts for advisory context only.
     Returns (MarketRegime, note_str).
     """
     e8, e20, e50 = row["ema_8"], row["ema_20"], row["ema_50"]
@@ -153,6 +160,8 @@ def assess_regime(df: pd.DataFrame, row: pd.Series) -> tuple:
 
     if atr_ratio > 2.0:
         return MarketRegime.HIGH_VOLATILITY, "ATR >2× average — reduce size, widen stops"
+    if atr_ratio < 0.5:
+        return MarketRegime.LOW_VOLATILITY, "ATR <0.5× average — compression, breakout watch"
 
     fanning_bull = e8 > e20 > e50
     fanning_bear = e8 < e20 < e50
@@ -199,6 +208,8 @@ def calc_anomaly_score(df: pd.DataFrame, row: pd.Series) -> tuple:
             atype = "drift"
         elif score < 0.1:
             atype = "flatline"
+        elif mean_z > 0.5 and max_z > 3:
+            atype = "pattern-break"
         elif mean_z > 0.5:
             atype = "oscillation"
         else:
