@@ -8,6 +8,12 @@ Install:  pip install notebooklm-py
 Auth:     notebooklm login          (once — stored in ~/.notebooklm/)
 Notebook: Green Bread Coach(GBC) — ID used directly for all CLI calls.
 
+CLI reference: references/notebooklm-py/src/notebooklm/cli/
+  source add <path> -n ID --json
+  source wait <source_id> -n ID --timeout SEC --json
+  ask "<question>" -n ID --json
+  note create "<content>" -t "<title>" -n ID --json
+
 All functions return a BridgeResult so callers can degrade gracefully when
 notebooklm-py is not installed or the user hasn't authenticated yet.
 """
@@ -22,13 +28,14 @@ from typing import Optional
 
 
 NOTEBOOK    = "Green Bread Coach(GBC)"
-NOTEBOOK_ID = os.environ.get(
-    "NOTEBOOKLM_NOTEBOOK_ID",
-    "57880976-bb78-4efc-9272-de4b83b25358",
+NOTEBOOK_ID = (
+    os.environ.get("NOTEBOOKLM_NOTEBOOK")
+    or os.environ.get("NOTEBOOKLM_NOTEBOOK_ID")  # legacy vault alias
+    or "57880976-bb78-4efc-9272-de4b83b25358"
 )
 _CLI = "notebooklm"
 
-# Always pass notebook ID via -n — never rely on name lookup or `notebooklm use`.
+# Always pass notebook ID via -n (matches options.py envvar NOTEBOOKLM_NOTEBOOK).
 _NB = NOTEBOOK_ID
 
 
@@ -98,8 +105,27 @@ def _parse_source_id(json_output: str) -> Optional[str]:
     source = data.get("source")
     if isinstance(source, dict) and source.get("id"):
         return str(source["id"])
-    if data.get("id"):
-        return str(data["id"])
+    return None
+
+
+def _parse_ask_answer(json_output: str) -> str:
+    """Extract answer text from `ask --json` response."""
+    try:
+        data = json.loads(json_output)
+    except (json.JSONDecodeError, TypeError):
+        return json_output
+    if isinstance(data, dict) and data.get("answer"):
+        return str(data["answer"])
+    return json_output
+
+
+def _parse_note_id(json_output: str) -> Optional[str]:
+    try:
+        data = json.loads(json_output)
+        if isinstance(data, dict) and data.get("id"):
+            return str(data["id"])
+    except (json.JSONDecodeError, TypeError):
+        pass
     return None
 
 
@@ -110,23 +136,35 @@ def source_add(path: Path, notebook_id: str = _NB) -> BridgeResult:
     return _run("source", "add", str(path), "-n", notebook_id, "--json")
 
 
-def source_wait(source_id: str, notebook_id: str = _NB) -> BridgeResult:
+def source_wait(source_id: str, notebook_id: str = _NB, timeout_sec: int = 300) -> BridgeResult:
     """Wait for a specific source to finish processing."""
-    return _run("source", "wait", source_id, "-n", notebook_id, timeout=300)
+    return _run(
+        "source", "wait", source_id,
+        "-n", notebook_id,
+        "--timeout", str(timeout_sec),
+        "--json",
+        timeout=timeout_sec + 20,
+    )
 
 
-def ask(question: str, notebook_id: str = _NB) -> BridgeResult:
+def ask(question: str, notebook_id: str = _NB, source_id: Optional[str] = None) -> BridgeResult:
     """Ask a grounded question; answers cite your notebook sources."""
-    return _run("ask", question, "-n", notebook_id, timeout=120)
+    args = ["ask", question, "-n", notebook_id, "--json"]
+    if source_id:
+        args.extend(["-s", source_id])
+    r = _run(*args, timeout=120)
+    if r.ok:
+        r = BridgeResult(ok=True, output=_parse_ask_answer(r.output), error="")
+    return r
 
 
 def note_create(text: str, title: str, notebook_id: str = _NB) -> BridgeResult:
     """
     Persist a session note for cross-session recall.
 
-    CLI syntax: notebooklm note create "<content>" -t "<title>" -n <notebook_id>
+    CLI syntax: notebooklm note create "<content>" -t "<title>" -n <notebook_id> --json
     """
-    return _run("note", "create", text, "-t", title, "-n", notebook_id)
+    return _run("note", "create", text, "-t", title, "-n", notebook_id, "--json")
 
 
 # ── Session Step 3 — Morning Brief query sequence ────────────────────────────
@@ -152,6 +190,7 @@ def run_morning_queries(
     Returns a dict of {question: BridgeResult}.
     """
     results: dict[str, BridgeResult] = {}
+    last_source_id: Optional[str] = None
 
     def log(msg: str) -> None:
         if verbose:
@@ -191,6 +230,7 @@ def run_morning_queries(
             log("  ✓ Source added")
             source_id = _parse_source_id(r.output)
             if source_id:
+                last_source_id = source_id
                 log(f"  → Waiting for source {source_id[:12]}...")
                 rw = source_wait(source_id)
                 if rw.ok:
@@ -206,7 +246,7 @@ def run_morning_queries(
     log("\n  [NotebookLM Responses]")
     for q in MORNING_QUESTIONS:
         log(f"\n  Q: {q}")
-        r = ask(q)
+        r = ask(q, source_id=last_source_id)
         results[q] = r
         if r.ok:
             for line in r.output.split("\n"):
@@ -236,7 +276,9 @@ def save_session_note(
     r = note_create(text=summary, title=title)
     if verbose:
         if r.ok:
-            print(f"  ✓ Session note saved to '{notebook}' ({_NB[:8]}...)")
+            note_id = _parse_note_id(r.output)
+            suffix = f" id={note_id[:12]}..." if note_id else ""
+            print(f"  ✓ Session note saved to '{notebook}' ({_NB[:8]}...){suffix}")
         else:
             print(f"  ✗ Note save failed: {r.error}")
     return r
@@ -252,10 +294,10 @@ def _print_manual_fallback(brief_path: Optional[Path] = None) -> None:
     print("\n  ── Manual fallback (METHOD B) ──────────────────────")
     if brief_path:
         print(f"  notebooklm source add {brief_path} -n {_NB} --json")
-        print(f"  notebooklm source wait <SOURCE_ID> -n {_NB}")
+        print(f"  notebooklm source wait <SOURCE_ID> -n {_NB} --timeout 300 --json")
     for q in MORNING_QUESTIONS:
-        print(f"  notebooklm ask '{q}' -n {_NB}")
-    print(f"  notebooklm note create '<summary>' -t 'Session {today}' -n {_NB}")
+        print(f"  notebooklm ask '{q}' -n {_NB} --json")
+    print(f"  notebooklm note create '<summary>' -t 'Session {today}' -n {_NB} --json")
     print("  ────────────────────────────────────────────────────\n")
 
 
